@@ -1,0 +1,1042 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>PlacaLens — Leitor de Placas Local</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;700&display=swap');
+
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0a;
+  --card: #111;
+  --border: #222;
+  --accent: #f5c400;
+  --accent2: #ff3c3c;
+  --green: #00d68f;
+  --blue: #3b82f6;
+  --text: #e8e8e8;
+  --muted: #555;
+  --plate-bg: #f0ebb8;
+  --plate-dark: #1a1a2e;
+}
+
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'JetBrains Mono', monospace; overflow: hidden; }
+
+/* ── LAYOUT ── */
+#app { display: grid; grid-template-rows: 52px 1fr; height: 100vh; }
+
+/* ── HEADER ── */
+header {
+  background: #0d0d0d;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px;
+  position: relative; z-index: 10;
+}
+.brand { font-family: 'Bebas Neue', sans-serif; font-size: 22px; letter-spacing: 4px; color: var(--accent); }
+.brand span { color: var(--text); }
+.status-pill {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px; letter-spacing: 2px; color: var(--muted);
+}
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent2); }
+.status-dot.ok { background: var(--green); animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* ── MAIN ── */
+main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
+@media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } }
+
+/* ── CAMERA PANEL ── */
+.cam-panel {
+  position: relative; background: #000; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+}
+
+#video { width: 100%; height: 100%; object-fit: cover; display: block; }
+#photoPreview { width: 100%; height: 100%; object-fit: contain; display: none; background: #000; }
+
+/* reticle */
+.reticle {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+}
+.reticle-box {
+  width: 74%; max-width: 540px;
+  aspect-ratio: 3.3 / 1;
+  position: relative;
+  border: 1.5px solid rgba(245,196,0,0.4);
+  transition: border-color .3s;
+}
+.reticle-box.hit { border-color: var(--green); }
+.reticle-box::before, .reticle-box::after,
+.reticle-box .c2::before, .reticle-box .c2::after {
+  content: ''; position: absolute; width: 18px; height: 18px;
+  border-color: var(--accent); border-style: solid;
+}
+.reticle-box::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; }
+.reticle-box::after  { top: -1px; right: -1px; border-width: 2px 2px 0 0; }
+.reticle-box .c2::before { bottom: -1px; left: -1px; border-width: 0 0 2px 2px; }
+.reticle-box .c2::after  { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; }
+.reticle-box.hit::before, .reticle-box.hit::after,
+.reticle-box.hit .c2::before, .reticle-box.hit .c2::after { border-color: var(--green); }
+
+/* scan line */
+.scan-line {
+  position: absolute; left: 0; right: 0; height: 2px; top: 0;
+  background: linear-gradient(90deg, transparent, var(--accent) 40%, var(--accent) 60%, transparent);
+  box-shadow: 0 0 10px var(--accent);
+  opacity: 0;
+}
+.scan-line.active { opacity: 1; animation: scanAnim 1.6s ease-in-out infinite; }
+@keyframes scanAnim { 0%{top:0} 100%{top:100%} }
+
+/* detected plate overlay */
+.plate-overlay {
+  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%) translateY(20px);
+  opacity: 0; transition: all .35s cubic-bezier(.16,1,.3,1);
+  text-align: center; pointer-events: none; white-space: nowrap;
+}
+.plate-overlay.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+.plate-visual {
+  background: var(--plate-bg); color: #111;
+  border-radius: 8px; border: 3px solid #aaa;
+  padding: 8px 28px 10px;
+  display: inline-block; position: relative;
+  box-shadow: 0 8px 32px rgba(0,0,0,.7);
+}
+.plate-visual::before {
+  content: 'BRASIL'; display: block;
+  font-size: 8px; letter-spacing: 4px; color: #1a3a8f;
+  font-family: 'Bebas Neue', sans-serif; margin-bottom: 2px;
+}
+.plate-visual.mercosul { border-top: 5px solid #1a3a8f; }
+.plate-visual .plate-chars {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: clamp(28px, 5vw, 52px);
+  letter-spacing: 8px;
+}
+
+/* top controls */
+.cam-controls {
+  position: absolute; top: 12px; left: 12px;
+  display: flex; gap: 8px; flex-wrap: wrap; z-index: 5;
+}
+.btn {
+  padding: 7px 14px; border-radius: 3px; cursor: pointer;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase;
+  border: 1px solid; transition: all .2s; user-select: none;
+  background: rgba(10,10,10,.85); backdrop-filter: blur(6px);
+}
+.btn-amber { border-color: var(--accent); color: var(--accent); }
+.btn-amber:hover, .btn-amber.on { background: var(--accent); color: #000; }
+.btn-blue  { border-color: var(--blue); color: var(--blue); }
+.btn-blue:hover, .btn-blue.on { background: var(--blue); color: #fff; }
+.btn-green { border-color: var(--green); color: var(--green); }
+.btn-green:hover, .btn-green.on { background: var(--green); color: #000; }
+.btn-red   { border-color: var(--accent2); color: var(--accent2); }
+.btn-red:hover { background: var(--accent2); color: #fff; }
+.btn:disabled { opacity: .35; cursor: not-allowed; pointer-events: none; }
+
+/* auto badge */
+.auto-badge {
+  position: absolute; top: 50px; left: 12px;
+  font-size: 9px; letter-spacing: 2px; color: var(--green);
+  border: 1px solid var(--green); background: rgba(0,214,143,.08);
+  padding: 3px 8px; border-radius: 2px;
+  opacity: 0; transition: opacity .3s; z-index: 5;
+}
+.auto-badge.show { opacity: 1; }
+.auto-badge-text { display: inline-block; animation: blink 1s infinite; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+/* detect label */
+.detect-lbl {
+  position: absolute; bottom: 88px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; letter-spacing: 2px; padding: 3px 12px; border-radius: 2px;
+  opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap;
+}
+.detect-lbl.show { opacity: 1; }
+.detect-lbl.searching { border: 1px solid var(--muted); color: var(--muted); }
+.detect-lbl.found { border: 1px solid var(--green); color: var(--green); background: rgba(0,214,143,.1); }
+
+/* upload modal */
+.upload-modal {
+  display: none; position: absolute; inset: 0; z-index: 30;
+  background: rgba(0,0,0,.92); backdrop-filter: blur(4px);
+  flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+}
+.upload-modal.open { display: flex; }
+.drop-zone {
+  border: 2px dashed var(--accent); border-radius: 10px;
+  padding: 48px 64px; text-align: center; cursor: pointer;
+  color: var(--accent); font-size: 13px; letter-spacing: 2px;
+  transition: all .2s; background: rgba(245,196,0,.04);
+}
+.drop-zone:hover, .drop-zone.drag { background: rgba(245,196,0,.1); }
+.drop-zone .dz-icon { font-size: 52px; display: block; margin-bottom: 12px; }
+.drop-zone small { display: block; margin-top: 8px; color: var(--muted); font-size: 10px; }
+#fileInput { display: none; }
+
+/* no-cam message */
+.no-cam {
+  display: none; position: absolute; inset: 0;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; color: var(--muted); font-size: 12px; text-align: center;
+}
+.no-cam.show { display: flex; }
+.no-cam .nc-icon { font-size: 48px; opacity: .3; }
+
+/* photo result strip */
+.photo-strip {
+  display: none; position: absolute; bottom: 0; left: 0; right: 0;
+  background: rgba(10,10,10,.95); border-top: 1px solid var(--border);
+  padding: 8px 16px; font-size: 9px; letter-spacing: 1px;
+  color: var(--muted); z-index: 4;
+}
+.photo-strip.show { display: block; }
+.photo-strip strong { color: var(--accent); }
+
+/* processing overlay */
+.processing {
+  display: none; position: absolute; inset: 0; z-index: 20;
+  background: rgba(0,0,0,.7); backdrop-filter: blur(2px);
+  flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+}
+.processing.show { display: flex; }
+.proc-ring {
+  width: 52px; height: 52px;
+  border: 2px solid rgba(245,196,0,.2);
+  border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 1s linear infinite;
+}
+.proc-label { font-size: 11px; letter-spacing: 3px; color: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── SIDEBAR ── */
+.sidebar {
+  background: var(--card); border-left: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.sb-top { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.sb-title { font-family: 'Bebas Neue', sans-serif; font-size: 16px; letter-spacing: 4px; color: var(--accent); }
+.sb-sub { font-size: 9px; color: var(--muted); letter-spacing: 2px; margin-top: 2px; }
+
+.stats { display: flex; border-bottom: 1px solid var(--border); }
+.stat { flex: 1; padding: 10px; text-align: center; border-right: 1px solid var(--border); }
+.stat:last-child { border-right: none; }
+.stat-val { font-family: 'Bebas Neue', sans-serif; font-size: 24px; color: var(--accent); display: block; }
+.stat-lbl { font-size: 8px; letter-spacing: 2px; color: var(--muted); display: block; margin-top: 1px; }
+
+.prog-bar { height: 2px; background: var(--border); position: relative; overflow: hidden; flex-shrink: 0; }
+.prog-fill { height: 100%; background: var(--accent); box-shadow: 0 0 8px var(--accent); transition: width .3s; width: 0; }
+
+.hist { flex: 1; overflow-y: auto; padding: 8px; }
+.hist::-webkit-scrollbar { width: 3px; }
+.hist::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+.empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  height: 100%; color: var(--muted); font-size: 11px; gap: 10px; text-align: center; padding: 20px;
+}
+.empty-icon { font-size: 36px; opacity: .2; }
+
+.hist-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 4px;
+  margin-bottom: 6px; background: #0d0d0d; cursor: pointer;
+  transition: border-color .2s, background .2s;
+  animation: slideIn .3s ease-out;
+}
+@keyframes slideIn { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; } }
+.hist-item:hover { border-color: var(--accent); background: rgba(245,196,0,.03); }
+.hist-item.fresh { border-color: var(--green); }
+
+.mini-plate {
+  background: var(--plate-bg); color: #111;
+  font-family: 'Bebas Neue', sans-serif; font-size: 14px; letter-spacing: 3px;
+  padding: 3px 8px 4px; border-radius: 3px; border: 1.5px solid #999;
+  white-space: nowrap; flex-shrink: 0; min-width: 90px; text-align: center;
+}
+.mini-plate.mercosul { border-top: 3px solid #1a3a8f; }
+
+.hi-meta { flex: 1; min-width: 0; }
+.hi-time { font-size: 9px; color: var(--muted); letter-spacing: 1px; display: block; }
+.hi-origin { font-size: 8px; color: var(--muted); letter-spacing: 1px; margin-top: 2px; }
+.conf-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.conf-track { flex: 1; height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }
+.conf-fill { height: 100%; border-radius: 1px; }
+.conf-pct { font-size: 9px; min-width: 26px; }
+
+.type-chip { font-size: 7px; letter-spacing: 2px; padding: 2px 5px; border-radius: 2px; flex-shrink: 0; }
+.chip-m { border: 1px solid var(--blue); color: var(--blue); background: rgba(59,130,246,.1); }
+.chip-a { border: 1px solid var(--muted); color: var(--muted); }
+
+.sb-footer { padding: 10px; border-top: 1px solid var(--border); display: flex; gap: 8px; }
+.sb-footer .btn { flex: 1; text-align: center; }
+
+/* toast */
+.toast {
+  position: fixed; top: 62px; left: 50%;
+  transform: translateX(-50%) translateY(-16px);
+  background: var(--green); color: #000;
+  font-family: 'Bebas Neue', sans-serif; font-size: 14px; letter-spacing: 4px;
+  padding: 9px 24px; border-radius: 3px; z-index: 9999;
+  opacity: 0; transition: all .3s; pointer-events: none; white-space: nowrap;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.toast.err { background: var(--accent2); color: #fff; }
+
+/* loading screen */
+#loader {
+  position: fixed; inset: 0; background: var(--bg);
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 20px; z-index: 9999; transition: opacity .5s;
+}
+#loader.gone { opacity: 0; pointer-events: none; }
+.loader-brand { font-family: 'Bebas Neue', sans-serif; font-size: 32px; letter-spacing: 8px; color: var(--accent); }
+.loader-ring { width: 44px; height: 44px; border: 2px solid #222; border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
+.loader-txt { font-size: 10px; letter-spacing: 3px; color: var(--muted); }
+
+/* file protocol warning banner */
+#fileWarningBanner {
+  display: none; background: #ff7300; color: #fff; padding: 10px 20px;
+  font-size: 10px; letter-spacing: 1.5px; text-align: center; font-weight: bold;
+  position: fixed; top: 0; left: 0; right: 0; z-index: 10000;
+  border-bottom: 2px solid #000; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+</style>
+</head>
+<body>
+
+<div id="fileWarningBanner">
+  ATENÇÃO: Acesso à câmera bloqueado no protocolo file://. Se a câmera não abrir, execute o <strong>iniciar.bat</strong> e abra <a href="http://localhost:3000" target="_blank" style="color:#fff; text-decoration:underline;">http://localhost:3000</a>.
+</div>
+
+<div id="loader">
+  <div class="loader-brand">PLACA<span style="color:var(--text)">LENS</span></div>
+  <div class="loader-ring"></div>
+  <div class="loader-txt" id="loaderTxt">CARREGANDO MOTOR OCR...</div>
+</div>
+
+<div id="app">
+  <header>
+    <div class="brand">PLACA<span>LENS</span></div>
+    <div class="status-pill">
+      <div class="status-dot" id="apiDot"></div>
+      <span id="apiLabel">INICIALIZANDO</span>
+    </div>
+  </header>
+
+  <main>
+    <!-- camera/photo zone -->
+    <div class="cam-panel" id="camPanel">
+      <video id="video" autoplay playsinline muted></video>
+      <img id="photoPreview" alt="">
+
+      <!-- reticle -->
+      <div class="reticle">
+        <div class="reticle-box" id="reticleBox">
+          <div class="c2"></div>
+          <div class="scan-line" id="scanLine"></div>
+        </div>
+      </div>
+
+      <!-- top controls -->
+      <div class="cam-controls">
+        <button class="btn btn-amber" id="btnCam" onclick="toggleCamera()">&#9658; CÂMERA</button>
+        <button class="btn btn-blue" onclick="openUpload()" title="Analisar foto existente">&#128247; FOTO</button>
+        <button class="btn btn-green" id="btnAuto" onclick="toggleAuto()" disabled title="Detectar placa automaticamente pela câmera">&#9654; AUTO-SCAN</button>
+        <button class="btn btn-amber" id="btnSnap" onclick="snapAndRead()" disabled title="Capturar frame agora">&#9673; LER AGORA</button>
+      </div>
+
+      <div class="auto-badge" id="autoBadge">
+        <span class="auto-badge-text">&#9679; AUTO-SCAN ATIVO</span>
+      </div>
+
+      <div class="detect-lbl" id="detectLbl"></div>
+
+      <!-- plate overlay -->
+      <div class="plate-overlay" id="plateOverlay">
+        <div class="plate-visual" id="plateVisual">
+          <div class="plate-chars" id="plateChars">---·----</div>
+        </div>
+      </div>
+
+      <!-- processing -->
+      <div class="processing" id="procOverlay">
+        <div class="proc-ring"></div>
+        <div class="proc-label" id="procLabel">ANALISANDO...</div>
+      </div>
+
+      <!-- upload modal -->
+      <div class="upload-modal" id="uploadModal">
+        <div class="drop-zone" id="dropZone">
+          <span class="dz-icon">&#128247;</span>
+          ARRASTE A FOTO DA PLACA<br>OU CLIQUE PARA SELECIONAR
+          <small>JPG &middot; PNG &middot; WEBP &middot; HEIC &middot; qualquer resolução</small>
+        </div>
+        <button class="btn btn-red" onclick="closeUpload()">&#10005; CANCELAR</button>
+      </div>
+      <input type="file" id="fileInput" accept="image/*">
+
+      <!-- no cam -->
+      <div class="no-cam" id="noCam">
+        <div class="nc-icon">&#128247;</div>
+        <div>Câmera indisponível.<br>Use <strong style="color:var(--accent)">&#128247; FOTO</strong> para enviar uma imagem.</div>
+      </div>
+
+      <!-- photo debug strip -->
+      <div class="photo-strip" id="photoStrip">
+        <strong>TEXTO BRUTO OCR:</strong> <span id="rawAnswer"></span>
+      </div>
+    </div>
+
+    <!-- sidebar -->
+    <div class="sidebar">
+      <div class="sb-top">
+        <div class="sb-title">PLACAS LIDAS</div>
+        <div class="sb-sub" id="sessionSub">SESSÃO 00:00</div>
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="stat-val" id="stTotal">0</span><span class="stat-lbl">TOTAL</span></div>
+        <div class="stat"><span class="stat-val" id="stMerc">0</span><span class="stat-lbl">MERCOSUL</span></div>
+        <div class="stat"><span class="stat-val" id="stConf">—</span><span class="stat-lbl">CONF. MÉD.</span></div>
+      </div>
+      <div class="prog-bar"><div class="prog-fill" id="progFill"></div></div>
+      <div class="hist" id="hist">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">&#128663;</div>
+          <div>Nenhuma placa lida ainda.<br><br>
+            <span style="color:var(--accent)">&#128247; FOTO</span> — lê imagem existente<br>
+            <span style="color:var(--green)">AUTO-SCAN</span> — detecta automaticamente<br>
+            <span style="color:var(--accent)">&#9673; LER AGORA</span> — lê frame atual
+          </div>
+        </div>
+      </div>
+      <div class="sb-footer">
+        <button class="btn btn-amber" onclick="exportCSV()" style="font-size:9px">&#8595; CSV</button>
+        <button class="btn btn-red"   onclick="clearAll()"  style="font-size:9px">&#10005; LIMPAR</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* =====================================================
+   PlacaLens — Versão Offline 100% Funcional
+   Usa Tesseract.js local e processamento inteligente
+   com regras de correção de padrões de placas brasileiras
+   (Mercosul e Antiga).
+   ===================================================== */
+
+const $ = id => document.getElementById(id);
+
+// ── state ──
+let stream = null, cameraOn = false, photoMode = false;
+let autoMode = false, autoRunning = false;
+let records = [], sessionStart = Date.now();
+let fCount = 0, fLast = Date.now();
+let worker = null;
+
+// OCR correction mappings for license plates
+const CHAR_TO_DIGIT = {
+  'O': '0', 'D': '0', 'Q': '0', 'U': '0',
+  'I': '1', 'L': '1', 'Y': '1', 'J': '1',
+  'Z': '2',
+  'E': '3',
+  'A': '4',
+  'S': '5',
+  'G': '6',
+  'T': '7',
+  'B': '8'
+};
+
+const DIGIT_TO_CHAR = {
+  '0': 'O',
+  '1': 'I',
+  '2': 'Z',
+  '3': 'E',
+  '4': 'A',
+  '5': 'S',
+  '6': 'G',
+  '7': 'T',
+  '8': 'B'
+};
+
+// ── boot ──
+(async function boot() {
+  if (window.location.protocol === 'file:') {
+    $('fileWarningBanner').style.display = 'block';
+  }
+  
+  await initOCR();
+  
+  setInterval(updateSession, 1000);
+  setInterval(updateFPS, 800);
+  setupUpload();
+  startCamera();
+})();
+
+// ── OCR initialization ──
+async function initOCR() {
+  try {
+    worker = await Tesseract.createWorker('eng', 1, {
+      logger: m => {
+        if ((m.status || '').includes('recognizing')) {
+          $('progFill').style.width = Math.round((m.progress || 0) * 100) + '%';
+        }
+      }
+    });
+
+    // Tune worker parameters for single line reading
+    await worker.setParameters({
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
+      tessedit_pageseg_mode: '7', // treat image as a single text line
+    });
+
+    $('apiDot').className = 'status-dot ok';
+    $('apiLabel').textContent = 'OCR LOCAL PRONTO';
+    $('loaderTxt').textContent = 'PRONTO';
+    await delay(600);
+    $('loader').classList.add('gone');
+  } catch (e) {
+    console.error("Erro ao inicializar Tesseract:", e);
+    $('apiDot').className = 'status-dot';
+    $('apiLabel').textContent = 'ERRO OCR LOCAL';
+    $('loaderTxt').textContent = 'FALHA OCR';
+    toastErr("Erro ao carregar OCR local.");
+  }
+}
+
+// ── camera ──
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }
+    });
+    $('video').srcObject = stream;
+    await $('video').play();
+    cameraOn = true; photoMode = false;
+    $('photoPreview').style.display = 'none';
+    $('video').style.display = 'block';
+    $('photoStrip').classList.remove('show');
+    $('btnCam').textContent = '\u25a0 PARAR';
+    $('btnCam').classList.add('on');
+    $('btnAuto').disabled = false;
+    $('btnSnap').disabled = false;
+    $('noCam').classList.remove('show');
+    requestAnimationFrame(fpsLoop);
+  } catch(e) {
+    $('noCam').classList.add('show');
+  }
+}
+function stopCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; cameraOn = false;
+  $('video').srcObject = null;
+  stopAuto();
+  $('btnCam').textContent = '\u25ba C\u00c2MERA';
+  $('btnCam').classList.remove('on');
+  $('btnAuto').disabled = true;
+  $('btnSnap').disabled = true;
+}
+function toggleCamera() { cameraOn ? stopCamera() : startCamera(); }
+function fpsLoop() { fCount++; if (cameraOn) requestAnimationFrame(fpsLoop); }
+function updateFPS() { const n = Date.now(); fCount = 0; fLast = n; }
+
+// ── AUTO-SCAN ──
+function toggleAuto() { autoMode ? stopAuto() : startAuto(); }
+function startAuto() {
+  if (!cameraOn || photoMode) return;
+  autoMode = true;
+  $('btnAuto').textContent = '\u25a0 PARAR AUTO';
+  $('btnAuto').classList.add('on');
+  $('scanLine').classList.add('active');
+  $('autoBadge').classList.add('show');
+  setDetect('BUSCANDO PLACA...', 'searching');
+  autoLoop();
+}
+function stopAuto() {
+  autoMode = false; autoRunning = false;
+  $('btnAuto').textContent = '\u25b6 AUTO-SCAN';
+  $('btnAuto').classList.remove('on');
+  $('scanLine').classList.remove('active');
+  $('autoBadge').classList.remove('show');
+  setDetect('', '');
+}
+async function autoLoop() {
+  while (autoMode) {
+    if (!autoRunning && cameraOn && $('video').readyState >= 2) {
+      autoRunning = true;
+      try {
+        const result = await recognizePlateLocal($('video'), false);
+        if (result && result.plate && autoMode) {
+          setDetect('\u2713 ' + fmtPlate(result.plate), 'found');
+          $('reticleBox').classList.add('hit');
+          setTimeout(() => $('reticleBox').classList.remove('hit'), 800);
+          registerPlate(result.plate, result.type, result.confidence, result.raw, 'AUTO');
+          toast('\u2713 AUTO: ' + fmtPlate(result.plate));
+          autoRunning = false;
+          await delay(4000); // cooldown after detection
+          if (autoMode) setDetect('BUSCANDO PLACA...', 'searching');
+        } else {
+          setDetect('BUSCANDO PLACA...', 'searching');
+        }
+      } catch(e) { console.warn('auto:', e); }
+      autoRunning = false;
+    }
+    await delay(1200); // scan interval
+  }
+}
+function setDetect(txt, cls) {
+  const el = $('detectLbl');
+  if (!txt) { el.className = 'detect-lbl'; return; }
+  el.textContent = txt;
+  el.className = 'detect-lbl show ' + cls;
+}
+
+// ── SNAP (manual frame read) ──
+async function snapAndRead() {
+  if (!cameraOn || $('video').readyState < 2) return;
+  showProc('LENDO PLACA...');
+  try {
+    const result = await recognizePlateLocal($('video'), false);
+    if (result && result.plate) {
+      registerPlate(result.plate, result.type, result.confidence, result.raw, 'MANUAL');
+      toast('\u2713 ' + fmtPlate(result.plate));
+      $('rawAnswer').textContent = result.raw || '—';
+      $('photoStrip').classList.add('show');
+    } else {
+      toastErr('Placa não encontrada no frame');
+      $('photoStrip').classList.remove('show');
+    }
+  } catch(e) { toastErr('Erro ao analisar: ' + e.message); }
+  hideProc();
+}
+
+// ── PHOTO UPLOAD ──
+function setupUpload() {
+  const dz = $('dropZone'), fi = $('fileInput');
+  dz.addEventListener('click', () => fi.click());
+  fi.addEventListener('change', e => { if (e.target.files[0]) handlePhoto(e.target.files[0]); });
+  dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
+  dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+  dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag'); if (e.dataTransfer.files[0]) handlePhoto(e.dataTransfer.files[0]); });
+}
+function openUpload()  { $('uploadModal').classList.add('open'); }
+function closeUpload() { $('uploadModal').classList.remove('open'); $('fileInput').value = ''; }
+
+async function handlePhoto(file) {
+  closeUpload();
+  if (cameraOn) stopCamera();
+  stopAuto();
+  photoMode = true;
+
+  const url = URL.createObjectURL(file);
+  const img = $('photoPreview');
+  img.src = url; img.style.display = 'block';
+  $('video').style.display = 'none';
+  $('photoStrip').classList.remove('show');
+  $('plateOverlay').classList.remove('show');
+
+  showProc('ANALISANDO FOTO...');
+
+  await new Promise(r => { img.onload = r; if (img.complete && img.naturalWidth) r(); });
+
+  try {
+    const result = await recognizePlateLocal(img, true);
+
+    if (result && result.plate) {
+      $('rawAnswer').textContent = result.raw || '—';
+      $('photoStrip').classList.add('show');
+      registerPlate(result.plate, result.type, result.confidence, result.raw, 'FOTO');
+      showPlateOverlay(result.plate, result.type === 'mercosul');
+      toast('\u2713 ' + fmtPlate(result.plate));
+    } else {
+      toastErr('Placa não encontrada na imagem');
+      $('photoStrip').classList.remove('show');
+    }
+  } catch(e) { toastErr('Erro: ' + e.message); console.error(e); }
+
+  hideProc();
+}
+
+// ── LOCAL OCR PROCESSING & OPTIMIZATION ──
+
+function isLetter(c) { return /^[A-Z]$/.test(c); }
+function isDigit(c)  { return /^[0-9]$/.test(c); }
+
+function toLetter(c) {
+  if (isLetter(c)) return c;
+  if (DIGIT_TO_CHAR[c]) return DIGIT_TO_CHAR[c];
+  return c;
+}
+
+function toDigit(c) {
+  if (isDigit(c)) return c;
+  if (CHAR_TO_DIGIT[c]) return CHAR_TO_DIGIT[c];
+  return c;
+}
+
+function tryMercosul(s) {
+  if (s.length !== 7) return null;
+  // Format: LLL N L NN (Indices: 0,1,2=L; 3=N; 4=L; 5,6=N)
+  let res = '';
+  let corrections = 0;
+  for (let i = 0; i < 7; i++) {
+    const c = s[i];
+    if (i === 0 || i === 1 || i === 2 || i === 4) {
+      const lit = toLetter(c);
+      if (lit !== c) corrections++;
+      res += lit;
+    } else {
+      const dig = toDigit(c);
+      if (dig !== c) corrections++;
+      res += dig;
+    }
+  }
+  if (/^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(res)) {
+    return { plate: res, score: corrections };
+  }
+  return null;
+}
+
+// ── UPDATED FOR VERCEL DEPLOYMENT ──
+function tryOld(s) {
+  if (s.length !== 7) return null;
+  // Format: LLL NNNN (Indices: 0,1,2=L; 3,4,5,6=N)
+  let res = '';
+  let corrections = 0;
+  for (let i = 0; i < 7; i++) {
+    const c = s[i];
+    if (i === 0 || i === 1 || i === 2) {
+      const lit = toLetter(c);
+      if (lit !== c) corrections++;
+      res += lit;
+    } else {
+      const dig = toDigit(c);
+      if (dig !== c) corrections++;
+      res += dig;
+    }
+  }
+  if (/^[A-Z]{3}[0-9]{4}$/.test(res)) {
+    return { plate: res, score: corrections };
+  }
+  return null;
+}
+
+function extractAndCorrectPlate(text) {
+  const clean = text.replace(/[^A-Z0-9]/g, '');
+  if (clean.length < 7) return null;
+
+  let bestMatch = null;
+
+  for (let i = 0; i <= clean.length - 7; i++) {
+    const sub = clean.substring(i, i + 7);
+
+    // Exact matches
+    if (/^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(sub)) {
+      return { plate: sub, isMercosul: true, confidence: 98 };
+    }
+    if (/^[A-Z]{3}[0-9]{4}$/.test(sub)) {
+      return { plate: sub, isMercosul: false, confidence: 98 };
+    }
+
+    // Try autocorrecting
+    const merc = tryMercosul(sub);
+    const old = tryOld(sub);
+
+    if (merc) {
+      if (!bestMatch || merc.score < bestMatch.score) {
+        bestMatch = { plate: merc.plate, isMercosul: true, score: merc.score };
+      }
+    }
+    if (old) {
+      if (!bestMatch || old.score < bestMatch.score) {
+        bestMatch = { plate: old.plate, isMercosul: false, score: old.score };
+      }
+    }
+  }
+
+  // Max 3 corrections allowed to avoid random text matching
+  if (bestMatch && bestMatch.score <= 3) {
+    const confidence = Math.max(50, 95 - bestMatch.score * 15);
+    return { plate: bestMatch.plate, isMercosul: bestMatch.isMercosul, confidence };
+  }
+
+  return null;
+}
+
+// Grayscale + Bradley-Roth Integral Image Adaptive Thresholding
+function preprocessImage(source, isPhoto) {
+  let sw, sh;
+  if (source.tagName === 'VIDEO') {
+    sw = source.videoWidth || 1280;
+    sh = source.videoHeight || 720;
+  } else {
+    sw = source.naturalWidth || source.width || 640;
+    sh = source.naturalHeight || source.height || 480;
+  }
+
+  let sx = 0, sy = 0, sW = sw, sH = sh;
+  if (!isPhoto) {
+    sW = sw * 0.74;
+    sH = sW / 3.3;
+    sx = (sw - sW) / 2;
+    sy = (sh - sH) / 2;
+  }
+
+  // Double size for better OCR
+  const scale = 2.5;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(sW * scale);
+  canvas.height = Math.round(sH * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(source, sx, sy, sW, sH, 0, 0, canvas.width, canvas.height);
+
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = imgData.data;
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // 1. Grayscale
+  const gray = new Float32Array(w * h);
+  for (let i = 0; i < d.length; i += 4) {
+    gray[i >> 2] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
+  }
+
+  // 2. Bradley-Roth Integral image
+  const half = Math.max(8, Math.round(Math.min(w, h) / 8));
+  const intg = new Float32Array((w + 1) * (h + 1));
+  for (let y = 1; y <= h; y++) {
+    let rs = 0;
+    for (let x = 1; x <= w; x++) {
+      rs += gray[(y - 1) * w + (x - 1)];
+      intg[y * (w + 1) + x] = rs + intg[(y - 1) * (w + 1) + x];
+    }
+  }
+
+  // Binarize
+  const canvasNormal = document.createElement('canvas');
+  canvasNormal.width = w; canvasNormal.height = h;
+  const ctxNormal = canvasNormal.getContext('2d');
+  const imgDataNormal = ctxNormal.createImageData(w, h);
+  const dNormal = imgDataNormal.data;
+
+  const canvasInvert = document.createElement('canvas');
+  canvasInvert.width = w; canvasInvert.height = h;
+  const ctxInvert = canvasInvert.getContext('2d');
+  const imgDataInvert = ctxInvert.createImageData(w, h);
+  const dInvert = imgDataInvert.data;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const x1 = Math.max(0, x - half), y1 = Math.max(0, y - half);
+      const x2 = Math.min(w - 1, x + half), y2 = Math.min(h - 1, y + half);
+      const area = (x2 - x1 + 1) * (y2 - y1 + 1);
+      const sum = intg[(y2 + 1) * (w + 1) + (x2 + 1)] 
+                - intg[y1 * (w + 1) + (x2 + 1)] 
+                - intg[(y2 + 1) * (w + 1) + x1] 
+                + intg[y1 * (w + 1) + x1];
+
+      const isDark = gray[y * w + x] < (sum / area) * 0.86;
+      const idx = (y * w + x) * 4;
+
+      // Normal
+      const valNormal = isDark ? 0 : 255;
+      dNormal[idx] = dNormal[idx + 1] = dNormal[idx + 2] = valNormal;
+      dNormal[idx + 3] = 255;
+
+      // Inverted
+      const valInvert = isDark ? 255 : 0;
+      dInvert[idx] = dInvert[idx + 1] = dInvert[idx + 2] = valInvert;
+      dInvert[idx + 3] = 255;
+    }
+  }
+
+  ctxNormal.putImageData(imgDataNormal, 0, 0);
+  ctxInvert.putImageData(imgDataInvert, 0, 0);
+
+  return {
+    normal: canvasNormal.toDataURL('image/png'),
+    inverted: canvasInvert.toDataURL('image/png')
+  };
+}
+
+async function recognizePlateLocal(source, isPhoto) {
+  if (!worker) return null;
+
+  const pre = preprocessImage(source, isPhoto);
+  let bestResult = null;
+
+  // Pass 1: Normal thresholded binarization
+  try {
+    const res = await worker.recognize(pre.normal);
+    const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
+    const corrected = extractAndCorrectPlate(raw);
+    if (corrected) {
+      bestResult = {
+        plate: corrected.plate,
+        type: corrected.isMercosul ? 'mercosul' : 'antiga',
+        confidence: corrected.confidence,
+        raw: res.data.text.trim()
+      };
+    }
+  } catch (e) {
+    console.warn("Pass 1 Local error:", e);
+  }
+
+  // Pass 2: Inverted binarization
+  if (!bestResult || bestResult.confidence < 80) {
+    try {
+      const res = await worker.recognize(pre.inverted);
+      const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
+      const corrected = extractAndCorrectPlate(raw);
+      if (corrected) {
+        if (!bestResult || corrected.confidence > bestResult.confidence) {
+          bestResult = {
+            plate: corrected.plate,
+            type: corrected.isMercosul ? 'mercosul' : 'antiga',
+            confidence: corrected.confidence,
+            raw: res.data.text.trim()
+          };
+        }
+      }
+    } catch (e) {
+      console.warn("Pass 2 Local error:", e);
+    }
+  }
+
+  // Pass 3: Spare Text Segmentation Mode
+  if (!bestResult) {
+    try {
+      await worker.setParameters({ tessedit_pageseg_mode: '11' });
+      const res = await worker.recognize(pre.normal);
+      const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
+      const corrected = extractAndCorrectPlate(raw);
+      await worker.setParameters({ tessedit_pageseg_mode: '7' });
+
+      if (corrected) {
+        bestResult = {
+          plate: corrected.plate,
+          type: corrected.isMercosul ? 'mercosul' : 'antiga',
+          confidence: corrected.confidence,
+          raw: res.data.text.trim()
+        };
+      }
+    } catch (e) {
+      console.warn("Pass 3 Local error:", e);
+      await worker.setParameters({ tessedit_pageseg_mode: '7' });
+    }
+  }
+
+  return bestResult;
+}
+
+// ── REGISTER ──
+function registerPlate(plate, type, conf, raw, origin) {
+  const now = Date.now();
+  // deduplicate within 5s
+  const dup = records.find(r => r.plate === plate && (now - r.ts) < 5000 && origin !== 'FOTO');
+  if (dup) return;
+
+  const isMerc = type === 'mercosul' || /^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(plate);
+  const entry = { plate, isMerc, conf, raw, origin, ts: now };
+  records.unshift(entry);
+  updateStats();
+  addHistItem(entry);
+  showPlateOverlay(plate, isMerc);
+}
+
+function showPlateOverlay(plate, isMerc) {
+  const po = $('plateOverlay');
+  const pv = $('plateVisual');
+  $('plateChars').textContent = fmtPlate(plate);
+  pv.className = 'plate-visual' + (isMerc ? ' mercosul' : '');
+  po.classList.add('show');
+  clearTimeout(po._t);
+  po._t = setTimeout(() => po.classList.remove('show'), 6000);
+}
+
+// ── UI ──
+// ... unchanged ...
+function addHistItem(e) {
+  $('emptyState').style.display = 'none';
+  const conf = Math.round(e.conf);
+  const cc = conf >= 80 ? 'var(--green)' : conf >= 60 ? 'var(--accent)' : 'var(--accent2)';
+  const div = document.createElement('div');
+  div.className = 'hist-item fresh';
+  setTimeout(() => div.classList.remove('fresh'), 2500);
+  div.innerHTML =
+    '<div class="mini-plate' + (e.isMerc ? ' mercosul' : '') + '">' + fmtPlate(e.plate) + '</div>' +
+    '<div class="hi-meta">' +
+    '<span class="hi-time">' + new Date(e.ts).toLocaleTimeString('pt-BR') + '</span>' +
+    '<span class="hi-origin">' + e.origin + '</span>' +
+    '<div class="conf-row"><div class="conf-track"><div class="conf-fill" style="width:' + conf + '%;background:' + cc + '"></div></div>' +
+    '<span class="conf-pct" style="color:' + cc + '">' + conf + '%</span></div></div>' +
+    '<span class="type-chip ' + (e.isMerc ? 'chip-m' : 'chip-a') + '">' + (e.isMerc ? 'MERCOSUL' : 'ANTIGA') + '</span>';
+  div.onclick = () => { navigator.clipboard.writeText(e.plate); toast('Copiado: ' + e.plate); };
+  $('hist').insertBefore(div, $('hist').firstChild);
+  const items = $('hist').querySelectorAll('.hist-item');
+  if (items.length > 100) items[items.length - 1].remove();
+}
+
+function updateStats() {
+  $('stTotal').textContent = records.length;
+  $('stMerc').textContent  = records.filter(r => r.isMerc).length;
+  const avg = records.length ? Math.round(records.reduce((a, b) => a + b.conf, 0) / records.length) : 0;
+  $('stConf').textContent = avg ? avg + '%' : '—';
+}
+
+function clearAll() {
+  records = [];
+  $('hist').innerHTML = '<div class="empty-state" id="emptyState"><div class="empty-icon">&#128663;</div><div>Nenhuma placa lida ainda.</div></div>';
+  updateStats();
+  $('plateOverlay').classList.remove('show');
+  $('photoStrip').classList.remove('show');
+}
+
+function exportCSV() {
+  if (!records.length) { toastErr('Nenhuma placa para exportar'); return; }
+  const rows = ['PLACA,TIPO,CONFIANCA,TIMESTAMP,ORIGEM'];
+  records.forEach(r => rows.push([r.plate, r.isMerc ? 'MERCOSUL' : 'ANTIGA', r.conf, new Date(r.ts).toISOString(), r.origin].join(',')));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([rows.join('\n')], { type: 'text/csv' }));
+  a.download = 'placas_' + Date.now() + '.csv';
+  a.click();
+}
+
+function showProc(txt) { $('procLabel').textContent = txt; $('procOverlay').classList.add('show'); $('progFill').style.width = '60%'; }
+function hideProc()    { $('procOverlay').classList.remove('show'); $('progFill').style.width = '0'; }
+
+function toast(msg, isErr) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast show' + (isErr ? ' err' : '');
+  clearTimeout(t._t);
+  t._t = setTimeout(() => { t.className = 'toast'; }, 3000);
+}
+function toastErr(msg) { toast(msg, true); }
+
+function fmtPlate(p) { return p.length === 7 ? p.slice(0,3) + '\u00b7' + p.slice(3) : p; }
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function updateSession() {
+  const s = Math.floor((Date.now() - sessionStart) / 1000);
+  $('sessionSub').textContent = 'SESSÃO ' + String(Math.floor(s / 60)).padStart(2,'0') + ':' + String(s % 60).padStart(2,'0');
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Log files
+*.log
+npm-debug.log*
+
+# Local env files (optional, left if any API key backend is ever added back)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Backups
+*_backup.html
+*.bak
+captura_tesseract.html
+
+# Windows local shortcuts
+iniciar.bat
+
