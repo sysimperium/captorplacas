@@ -930,8 +930,8 @@ async function recognizePlateLocal(source, isPhoto) {
   }
 
   // Scan multiple adaptive threshold coefficients to handle varying lighting/contrast
-  const coeffs = [0.85, 0.90, 0.80, 0.95];
-  let bestCandidate = null;
+  const coeffs = [0.85, 0.88, 0.92, 0.80, 0.95];
+  const candidates = [];
   let rawOutputs = [];
 
   for (const coeff of coeffs) {
@@ -948,30 +948,26 @@ async function recognizePlateLocal(source, isPhoto) {
         const res = await worker.recognize(imgDataUrl);
         const text = res.data.text || '';
         const raw = text.replace(/\s+/g, '').toUpperCase();
+        const ocrConf = res.data.confidence || 50;
         
-        rawOutputs.push({ raw: text.trim(), coeff, imageType, imgDataUrl });
+        rawOutputs.push({ raw: text.trim(), ocrConf, imgDataUrl });
 
         const corrected = extractAndCorrectPlate(raw);
         if (corrected) {
-          const result = {
+          // Deduce corrections score: 0 for exact match, 1, 2, or 3 corrections
+          let score = 0;
+          if (corrected.confidence === 98) score = 0;
+          else score = Math.round((95 - corrected.confidence) / 15);
+
+          candidates.push({
             plate: corrected.plate,
             type: corrected.isMercosul ? 'mercosul' : 'antiga',
             confidence: corrected.confidence,
+            ocrConf: ocrConf,
+            corrections: score,
             raw: text.trim(),
             imgDataUrl: imgDataUrl
-          };
-
-          // If high confidence match (0 or 1 corrections), return immediately
-          if (corrected.confidence >= 80) {
-            window._lastRawOCR = text.trim();
-            renderDebugImage(imgDataUrl);
-            return result;
-          }
-
-          // Save the best candidate found so far (e.g. 2 corrections)
-          if (!bestCandidate || corrected.confidence > bestCandidate.confidence) {
-            bestCandidate = result;
-          }
+          });
         }
       } catch(e) {
         console.warn("Erro no OCR do coeff " + coeff + " (" + imageType + "):", e);
@@ -979,16 +975,32 @@ async function recognizePlateLocal(source, isPhoto) {
     }
   }
 
-  // Fallback: return the best candidate found with lower confidence (e.g. 2 corrections)
-  if (bestCandidate) {
-    window._lastRawOCR = bestCandidate.raw;
-    renderDebugImage(bestCandidate.imgDataUrl);
-    return bestCandidate;
+  // If we found any candidates, sort them to find the absolute best match
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => {
+      // 1. Prioritize fewer character corrections first
+      const corrDiff = a.corrections - b.corrections;
+      if (corrDiff !== 0) return corrDiff;
+      
+      // 2. Prioritize higher Tesseract neural network shape confidence second
+      return b.ocrConf - a.ocrConf;
+    });
+
+    const best = candidates[0];
+    window._lastRawOCR = best.raw;
+    renderDebugImage(best.imgDataUrl);
+    return best;
   }
 
-  // If no match was found, find the raw output with the most characters to show in the debug strip
+  // If no match was found, find the raw output with the most characters/highest confidence
   if (rawOutputs.length > 0) {
-    rawOutputs.sort((a, b) => b.raw.length - a.raw.length);
+    rawOutputs.sort((a, b) => {
+      // Prioritize text length first
+      const lenDiff = b.raw.length - a.raw.length;
+      if (lenDiff !== 0) return lenDiff;
+      // Then prioritize OCR confidence
+      return b.ocrConf - a.ocrConf;
+    });
     window._lastRawOCR = rawOutputs[0].raw;
     renderDebugImage(rawOutputs[0].imgDataUrl);
   } else {
