@@ -434,9 +434,9 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
 <script>
 /* =====================================================
    PlacaLens — Versão Offline 100% Funcional
-   Usa Tesseract.js local e processamento inteligente
-   com regras de correção de padrões de placas brasileiras
-   (Mercosul e Antigas de 6 ou 7 caracteres).
+   Usa Tesseract.js local e segmentação por caracteres
+   com whitelists específicas baseadas nas regras
+   das placas brasileiras (Mercosul e Antiga).
    ===================================================== */
 
 const $ = id => document.getElementById(id);
@@ -657,7 +657,6 @@ async function handlePhoto(file) {
     const result = await recognizePlateLocal(img, true);
 
     if (result && result.plate) {
-      // Display the binarized image to the user for feedback
       const debugPre = preprocessImage(img, true, 0.86);
       img.src = debugPre.normal;
 
@@ -692,7 +691,6 @@ function toDigit(c) {
   return c;
 }
 
-// Format 1: Mercosul (LLLNLNN) E.g.: ABC1D23
 function tryMercosul(s) {
   if (s.length !== 7) return null;
   let res = '';
@@ -715,7 +713,6 @@ function tryMercosul(s) {
   return null;
 }
 
-// Format 2: Antiga 7 Chars (LLLNNNN) E.g.: ABC1234
 function tryOld7(s) {
   if (s.length !== 7) return null;
   let res = '';
@@ -738,36 +735,12 @@ function tryOld7(s) {
   return null;
 }
 
-// Format 3: Antiga 6 Chars (LLLNNN) E.g.: ABC123 (typo fallback or older motorcycle standard)
-function tryOld6(s) {
-  if (s.length !== 6) return null;
-  let res = '';
-  let corrections = 0;
-  for (let i = 0; i < 6; i++) {
-    const c = s[i];
-    if (i === 0 || i === 1 || i === 2) {
-      const lit = toLetter(c);
-      if (lit !== c) corrections++;
-      res += lit;
-    } else {
-      const dig = toDigit(c);
-      if (dig !== c) corrections++;
-      res += dig;
-    }
-  }
-  if (/^[A-Z]{3}[0-9]{3}$/.test(res)) {
-    return { plate: res, score: corrections };
-  }
-  return null;
-}
-
 function extractAndCorrectPlate(text) {
   const clean = text.replace(/[^A-Z0-9]/g, '');
-  if (clean.length < 6) return null;
+  if (clean.length < 7) return null;
 
   let bestMatch = null;
 
-  // 1. Sliding window of 7 characters (for Mercosul LLLNLNN and Old LLLNNNN)
   for (let i = 0; i <= clean.length - 7; i++) {
     const sub = clean.substring(i, i + 7);
 
@@ -779,7 +752,6 @@ function extractAndCorrectPlate(text) {
       return { plate: sub, isMercosul: false, confidence: 98 };
     }
 
-    // Corrected matches
     const merc = tryMercosul(sub);
     const old7 = tryOld7(sub);
 
@@ -795,26 +767,6 @@ function extractAndCorrectPlate(text) {
     }
   }
 
-  // 2. Sliding window of 6 characters (for LLLNNN)
-  for (let i = 0; i <= clean.length - 6; i++) {
-    const sub = clean.substring(i, i + 6);
-
-    if (/^[A-Z]{3}[0-9]{3}$/.test(sub)) {
-      // Return exact 6-char immediately if we don't have a perfect 7-char match
-      if (!bestMatch || bestMatch.score > 0) {
-        return { plate: sub, isMercosul: false, confidence: 98 };
-      }
-    }
-
-    const old6 = tryOld6(sub);
-    if (old6) {
-      if (!bestMatch || old6.score < bestMatch.score) {
-        bestMatch = { plate: old6.plate, isMercosul: false, score: old6.score };
-      }
-    }
-  }
-
-  // Allow up to 3 character corrections
   if (bestMatch && bestMatch.score <= 3) {
     const confidence = Math.max(50, 95 - bestMatch.score * 15);
     return { plate: bestMatch.plate, isMercosul: bestMatch.isMercosul, confidence };
@@ -824,8 +776,7 @@ function extractAndCorrectPlate(text) {
 }
 
 // Grayscale + Bradley-Roth Integral Image Adaptive Thresholding
-// Scaled down to optimal 120px height for Tesseract character recognition speed and size limits
-function preprocessImage(source, isPhoto, coeff) {
+function getPreprocessedCanvas(source, isPhoto, coeff) {
   let sw, sh;
   if (source.tagName === 'VIDEO') {
     sw = source.videoWidth || 1280;
@@ -878,17 +829,11 @@ function preprocessImage(source, isPhoto, coeff) {
   }
 
   // Binarize
-  const canvasNormal = document.createElement('canvas');
-  canvasNormal.width = w; canvasNormal.height = h;
-  const ctxNormal = canvasNormal.getContext('2d');
-  const imgDataNormal = ctxNormal.createImageData(w, h);
-  const dNormal = imgDataNormal.data;
-
-  const canvasInvert = document.createElement('canvas');
-  canvasInvert.width = w; canvasInvert.height = h;
-  const ctxInvert = canvasInvert.getContext('2d');
-  const imgDataInvert = ctxInvert.createImageData(w, h);
-  const dInvert = imgDataInvert.data;
+  const bCanvas = document.createElement('canvas');
+  bCanvas.width = w; bCanvas.height = h;
+  const bCtx = bCanvas.getContext('2d');
+  const bImgData = bCtx.createImageData(w, h);
+  const bd = bImgData.data;
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -903,42 +848,145 @@ function preprocessImage(source, isPhoto, coeff) {
       const isDark = gray[y * w + x] < (sum / area) * coeff;
       const idx = (y * w + x) * 4;
 
-      // Normal
-      const valNormal = isDark ? 0 : 255;
-      dNormal[idx] = dNormal[idx + 1] = dNormal[idx + 2] = valNormal;
-      dNormal[idx + 3] = 255;
-
-      // Inverted
-      const valInvert = isDark ? 255 : 0;
-      dInvert[idx] = dInvert[idx + 1] = dInvert[idx + 2] = valInvert;
-      dInvert[idx + 3] = 255;
+      const val = isDark ? 0 : 255;
+      bd[idx] = bd[idx + 1] = bd[idx + 2] = val;
+      bd[idx + 3] = 255;
     }
   }
 
-  ctxNormal.putImageData(imgDataNormal, 0, 0);
-  ctxInvert.putImageData(imgDataInvert, 0, 0);
+  bCtx.putImageData(bImgData, 0, 0);
+  return bCanvas;
+}
 
+function preprocessImage(source, isPhoto, coeff) {
+  const canvas = getPreprocessedCanvas(source, isPhoto, coeff);
+  
+  const w = canvas.width;
+  const h = canvas.height;
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  
+  const canvasInvert = document.createElement('canvas');
+  canvasInvert.width = w; canvasInvert.height = h;
+  const ctxInvert = canvasInvert.getContext('2d');
+  const imgDataInvert = ctxInvert.createImageData(w, h);
+  const dInvert = imgDataInvert.data;
+  
+  for (let i = 0; i < d.length; i += 4) {
+    const val = d[i] === 0 ? 255 : 0;
+    dInvert[i] = dInvert[i+1] = dInvert[i+2] = val;
+    dInvert[i+3] = 255;
+  }
+  ctxInvert.putImageData(imgDataInvert, 0, 0);
+  
   return {
-    normal: canvasNormal.toDataURL('image/png'),
+    normal: canvas.toDataURL('image/png'),
     inverted: canvasInvert.toDataURL('image/png')
   };
+}
+
+// Segment character-by-character horizontally
+function getColumnDataURL(canvas, i, totalCols) {
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // Crop vertical middle 70% to remove top band ("BRASIL") and bottom borders
+  const yStart = h * 0.15;
+  const yEnd = h * 0.85;
+  const cropH = yEnd - yStart;
+
+  // Crop horizontal columns with slight side safety margins
+  const xStart = w * 0.06;
+  const xEnd = w * 0.94;
+  const textW = xEnd - xStart;
+  const colW = textW / totalCols;
+
+  const centerX = xStart + (i + 0.5) * colW;
+  const cropW = colW * 1.35; // 1.35x width for padding/horizontal overlaps
+  const cropX = Math.max(0, Math.min(w - cropW, centerX - cropW / 2));
+
+  const tempCanvas = document.createElement('canvas');
+  tempCanvas.width = Math.round(cropW);
+  tempCanvas.height = Math.round(cropH);
+  const tempCtx = tempCanvas.getContext('2d');
+  tempCtx.drawImage(canvas, cropX, yStart, cropW, cropH, 0, 0, cropW, cropH);
+
+  return tempCanvas.toDataURL('image/png');
+}
+
+// Perform character-by-character OCR on segmented blocks with strict whitelist patterns
+async function recognizeSegmented(canvas) {
+  let resultChars = [];
+  let confidences = [];
+  const totalCols = 7;
+
+  for (let i = 0; i < totalCols; i++) {
+    const colImg = getColumnDataURL(canvas, i, totalCols);
+    
+    // Whitelist rules based on Brazilian license plate format
+    let whitelist = '';
+    if (i === 0 || i === 1 || i === 2) {
+      whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'; // letters only
+    } else if (i === 3 || i === 5 || i === 6) {
+      whitelist = '0123456789'; // digits only
+    } else if (i === 4) {
+      whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; // letter (Mercosul) or digit (Old)
+    }
+
+    try {
+      await worker.setParameters({
+        tessedit_char_whitelist: whitelist,
+        tessedit_pageseg_mode: '10' // treat as a single character
+      });
+
+      const res = await worker.recognize(colImg);
+      const txt = res.data.text.trim().replace(/[^A-Z0-9]/g, '');
+      const char = txt.length > 0 ? txt[0] : '';
+      
+      resultChars.push(char || '?');
+      confidences.push(res.data.confidence || 50);
+    } catch (e) {
+      console.warn(`Erro no caractere ${i}:`, e);
+      resultChars.push('?');
+      confidences.push(10);
+    }
+  }
+
+  const plate = resultChars.join('');
+  const avgConf = confidences.reduce((a, b) => a + b, 0) / totalCols;
+
+  const isMerc = /^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(plate);
+  const isOld  = /^[A-Z]{3}[0-9]{4}$/.test(plate);
+
+  if (isMerc || isOld) {
+    return {
+      plate: plate,
+      type: isMerc ? 'mercosul' : 'antiga',
+      confidence: avgConf,
+      raw: plate
+    };
+  }
+  return null;
 }
 
 async function recognizePlateLocal(source, isPhoto) {
   if (!worker) return null;
 
-  // Multi-pass with different threshold coefficients for extreme lighting / font variations
-  const coeffs = [0.86, 0.92, 0.80];
-
+  // Pass 1: Try fast whole-image OCR with standard threshold (best for high resolution / clean angles)
+  const coeffs = [0.86, 0.92];
   for (const coeff of coeffs) {
     const pre = preprocessImage(source, isPhoto, coeff);
-
-    // Pass 1: Normal black-on-white text binarization
+    
     try {
+      await worker.setParameters({
+        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
+        tessedit_pageseg_mode: '7'
+      });
       const res = await worker.recognize(pre.normal);
       const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
       const corrected = extractAndCorrectPlate(raw);
-      if (corrected) {
+      if (corrected && corrected.confidence >= 85) {
         return {
           plate: corrected.plate,
           type: corrected.isMercosul ? 'mercosul' : 'antiga',
@@ -946,48 +994,18 @@ async function recognizePlateLocal(source, isPhoto) {
           raw: res.data.text.trim()
         };
       }
-    } catch (e) {
-      console.warn("Pass 1 error:", e);
-    }
-
-    // Pass 2: Inverted white-on-black text binarization (better for red/special/shadowed plates)
-    try {
-      const res = await worker.recognize(pre.inverted);
-      const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
-      const corrected = extractAndCorrectPlate(raw);
-      if (corrected) {
-        return {
-          plate: corrected.plate,
-          type: corrected.isMercosul ? 'mercosul' : 'antiga',
-          confidence: corrected.confidence,
-          raw: res.data.text.trim()
-        };
-      }
-    } catch (e) {
-      console.warn("Pass 2 error:", e);
-    }
+    } catch(e) {}
   }
 
-  // Pass 3: Fallback using Sparse Text layout (tessedit_pageseg_mode = 11)
-  try {
-    const pre = preprocessImage(source, isPhoto, 0.86);
-    await worker.setParameters({ tessedit_pageseg_mode: '11' });
-    const res = await worker.recognize(pre.normal);
-    const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
-    const corrected = extractAndCorrectPlate(raw);
-    await worker.setParameters({ tessedit_pageseg_mode: '7' });
-
-    if (corrected) {
-      return {
-        plate: corrected.plate,
-        type: corrected.isMercosul ? 'mercosul' : 'antiga',
-        confidence: corrected.confidence,
-        raw: res.data.text.trim()
-      };
+  // Pass 2: Segmented horizontal character-by-character OCR (most robust method)
+  // Splits plate into 7 columns and restricts Tesseract to whitelisted characters based on index
+  const segCoeffs = [0.86, 0.92, 0.80];
+  for (const coeff of segCoeffs) {
+    const canvasNormal = getPreprocessedCanvas(source, isPhoto, coeff);
+    const result = await recognizeSegmented(canvasNormal);
+    if (result) {
+      return result;
     }
-  } catch (e) {
-    console.warn("Pass 3 error:", e);
-    await worker.setParameters({ tessedit_pageseg_mode: '7' });
   }
 
   return null;
