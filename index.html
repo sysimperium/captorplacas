@@ -908,273 +908,19 @@ function preprocessImage(source, isPhoto, coeff) {
   };
 }
 
-// Segment character-by-character horizontally
-// Helper to invert a canvas (turns white background to black and black text to white, or vice versa)
-function getInvertedCanvas(canvas) {
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d');
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const d = imgData.data;
-  
-  const invCanvas = document.createElement('canvas');
-  invCanvas.width = w; invCanvas.height = h;
-  const invCtx = invCanvas.getContext('2d');
-  const invImgData = invCtx.createImageData(w, h);
-  const id = invImgData.data;
-  
-  for (let i = 0; i < d.length; i += 4) {
-    const val = d[i] === 0 ? 255 : 0;
-    id[i] = id[i+1] = id[i+2] = val;
-    id[i+3] = 255;
-  }
-  invCtx.putImageData(invImgData, 0, 0);
-  return invCanvas;
-}
-
-// Dynamically segment characters based on vertical projection of black pixels
-function segmentCharacters(canvas) {
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d');
-  
-  // Crop vertical middle 70% to ignore "BRASIL" top bar and borders
-  const yStart = Math.round(h * 0.15);
-  const yEnd = Math.round(h * 0.85);
-  const cropH = yEnd - yStart;
-  
-  const imgData = ctx.getImageData(0, yStart, w, cropH);
-  const d = imgData.data;
-  
-  // Calculate vertical projection (count black pixels in each column x)
-  const proj = new Int32Array(w);
-  for (let x = 0; x < w; x++) {
-    let count = 0;
-    for (let y = 0; y < cropH; y++) {
-      const idx = (y * w + x) * 4;
-      // In our binarized canvas, black pixels are 0
-      if (d[idx] === 0) {
-        count++;
-      }
-    }
-    proj[x] = count;
-  }
-  
-  // Find active segments where proj[x] > threshold
-  const thresh = Math.max(1, cropH * 0.05); // at least 5% of height has black pixels
-  let inSegment = false;
-  let segStart = 0;
-  const rawSegments = [];
-  
-  for (let x = 0; x < w; x++) {
-    const active = proj[x] > thresh;
-    if (active && !inSegment) {
-      inSegment = true;
-      segStart = x;
-    } else if (!active && inSegment) {
-      inSegment = false;
-      rawSegments.push({ start: segStart, end: x });
-    }
-  }
-  if (inSegment) {
-    rawSegments.push({ start: segStart, end: w - 1 });
-  }
-  
-  // Filter segments: must be wide enough (e.g. > 3px) and not too wide (e.g. < w / 5)
-  const minW = Math.max(3, w * 0.015);
-  const maxW = w * 0.2;
-  let filtered = rawSegments.filter(s => {
-    const sw = s.end - s.start;
-    return sw >= minW && sw <= maxW;
-  });
-  
-  // If we have 8 segments, check if one of them is a hyphen (usually in the middle, index 2 to 5, and very thin/small)
-  if (filtered.length === 8) {
-    // Find the smallest segment near the middle (index 2 to 5)
-    let hyphenIdx = -1;
-    let minWidth = 999;
-    for (let i = 2; i <= 5; i++) {
-      const width = filtered[i].end - filtered[i].start;
-      if (width < minWidth) {
-        minWidth = width;
-        hyphenIdx = i;
-      }
-    }
-    // Remove the hyphen segment
-    if (hyphenIdx !== -1 && minWidth < w * 0.05) {
-      filtered.splice(hyphenIdx, 1);
-    }
-  }
-  
-  // If we don't get exactly 7 segments after filtering, let's fall back to even column distribution
-  if (filtered.length !== 7) {
-    const textW = w * 0.88;
-    const xStart = w * 0.06;
-    const colW = textW / 7;
-    filtered = [];
-    for (let i = 0; i < 7; i++) {
-      const start = Math.round(xStart + i * colW);
-      const end = Math.round(start + colW);
-      filtered.push({ start, end });
-    }
-  }
-  
-  return filtered;
-}
-
-// Render binarized plate and segmented character images for real-time visual feedback
-function renderDebugImages(canvas, segmentUrls) {
+// Render binarized plate image for real-time visual feedback of the OCR scanner
+function renderDebugImage(imgDataUrl) {
   const container = $('debugImageContainer');
   if (!container) return;
   container.innerHTML = '';
 
-  // Add the binarized whole plate
   const plateImg = document.createElement('img');
-  plateImg.src = canvas.toDataURL('image/png');
-  plateImg.style.height = '36px';
-  plateImg.style.border = '1px solid var(--accent)';
-  plateImg.style.borderRadius = '2px';
-  plateImg.title = 'Placa Binarizada (Processada)';
+  plateImg.src = imgDataUrl;
+  plateImg.style.height = '42px';
+  plateImg.style.border = '2px solid var(--accent)';
+  plateImg.style.borderRadius = '4px';
+  plateImg.title = 'Imagem Binarizada do Motor OCR';
   container.appendChild(plateImg);
-
-  // Add separator
-  const sep = document.createElement('span');
-  sep.innerHTML = '&rarr;';
-  sep.style.color = 'var(--muted)';
-  sep.style.fontSize = '14px';
-  container.appendChild(sep);
-
-  // Add the 7 segmented columns
-  segmentUrls.forEach((url, i) => {
-    const colImg = document.createElement('img');
-    colImg.src = url;
-    colImg.style.height = '28px';
-    colImg.style.border = '1px solid var(--border)';
-    colImg.style.borderRadius = '2px';
-    colImg.style.background = '#fff';
-    colImg.title = `Caractere ${i + 1}`;
-    container.appendChild(colImg);
-  });
-}
-
-// Segment character-by-character horizontally and apply a Center Focus Mask to avoid bleed
-function getColumnDataURL(canvas, seg, i) {
-  const w = canvas.width;
-  const h = canvas.height;
-
-  // Crop vertical middle 70% to remove top band ("BRASIL") and bottom borders
-  const yStart = h * 0.15;
-  const yEnd = h * 0.85;
-  const cropH = yEnd - yStart;
-
-  const colW = seg.end - seg.start;
-  const centerX = seg.start + colW / 2;
-  const cropW = colW * 1.6; // 1.6x width to capture full character even if slightly off-center
-  const cropX = Math.max(0, Math.min(w - cropW, centerX - cropW / 2));
-
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = Math.round(cropW);
-  tempCanvas.height = Math.round(cropH);
-  const tempCtx = tempCanvas.getContext('2d');
-  tempCtx.drawImage(canvas, cropX, yStart, cropW, cropH, 0, 0, cropW, cropH);
-
-  // Apply Center Focus Mask:
-  // Fades out horizontal edges to white to completely eliminate neighboring character bleeding.
-  const tempImgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-  const data = tempImgData.data;
-  const cw = tempCanvas.width;
-  const ch = tempCanvas.height;
-  const midX = cw / 2;
-  const keepHalf = colW * 0.5; // keep actual character width intact
-  const fadeStart = colW * 0.75; // fade out neighboring characters beyond character width
-
-  for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      const dist = Math.abs(x - midX);
-      if (dist > keepHalf) {
-        let factor = (dist - keepHalf) / (fadeStart - keepHalf);
-        if (factor > 1) factor = 1;
-        const idx = (y * cw + x) * 4;
-        data[idx]     = Math.round(data[idx] + (255 - data[idx]) * factor);
-        data[idx + 1] = Math.round(data[idx + 1] + (255 - data[idx + 1]) * factor);
-        data[idx + 2] = Math.round(data[idx + 2] + (255 - data[idx + 2]) * factor);
-      }
-    }
-  }
-  tempCtx.putImageData(tempImgData, 0, 0);
-
-  return tempCanvas.toDataURL('image/png');
-}
-
-// Perform character-by-character OCR on segmented blocks with strict whitelist patterns
-async function recognizeSegmented(canvas) {
-  let resultChars = [];
-  let confidences = [];
-  let segmentUrls = [];
-  const totalCols = 7;
-
-  // Perform dynamic horizontal projection segmentation
-  const segments = segmentCharacters(canvas);
-
-  let currentWhitelist = null;
-
-  for (let i = 0; i < totalCols; i++) {
-    const colImg = getColumnDataURL(canvas, segments[i], i);
-    segmentUrls.push(colImg);
-    
-    // Whitelist rules based on Brazilian license plate format
-    let whitelist = '';
-    if (i === 0 || i === 1 || i === 2) {
-      whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'; // letters only
-    } else if (i === 3 || i === 5 || i === 6) {
-      whitelist = '0123456789'; // digits only
-    } else if (i === 4) {
-      whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; // letter (Mercosul) or digit (Old)
-    }
-
-    try {
-      if (whitelist !== currentWhitelist) {
-        await worker.setParameters({
-          tessedit_char_whitelist: whitelist,
-          tessedit_pageseg_mode: '10' // treat as a single character
-        });
-        currentWhitelist = whitelist;
-      }
-
-      const res = await worker.recognize(colImg);
-      const txt = res.data.text.trim().replace(/[^A-Z0-9]/g, '');
-      const char = txt.length > 0 ? txt[0] : '';
-      
-      resultChars.push(char || '?');
-      confidences.push(res.data.confidence || 50);
-    } catch (e) {
-      console.warn(`Erro no caractere ${i}:`, e);
-      resultChars.push('?');
-      confidences.push(10);
-    }
-  }
-
-  const plate = resultChars.join('');
-  const avgConf = confidences.reduce((a, b) => a + b, 0) / totalCols;
-
-  // Expose raw results in window scope
-  window._lastRawOCR = plate;
-
-  // Render segments in UI in real-time
-  renderDebugImages(canvas, segmentUrls);
-
-  const isMerc = /^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(plate);
-  const isOld  = /^[A-Z]{3}[0-9]{4}$/.test(plate);
-
-  if (isMerc || isOld) {
-    return {
-      plate: plate,
-      type: isMerc ? 'mercosul' : 'antiga',
-      confidence: avgConf,
-      raw: plate
-    };
-  }
-  return null;
 }
 
 async function recognizePlateLocal(source, isPhoto) {
@@ -1183,53 +929,70 @@ async function recognizePlateLocal(source, isPhoto) {
     return null;
   }
 
-  // Pass 1: Try fast whole-image OCR with standard threshold (best for high resolution / clean angles)
-  const coeffs = [0.86, 0.92];
+  // Scan multiple adaptive threshold coefficients to handle varying lighting/contrast
+  const coeffs = [0.85, 0.90, 0.80, 0.95];
+  let bestCandidate = null;
+  let rawOutputs = [];
+
   for (const coeff of coeffs) {
     const pre = preprocessImage(source, isPhoto, coeff);
     
-    // Check both normal and inverted preprocessed images to support white-on-dark colored plates
+    // Check both normal (black text on white) and inverted (white text on black)
     for (const imageType of ['normal', 'inverted']) {
       try {
         await worker.setParameters({
           tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-          tessedit_pageseg_mode: '7'
+          tessedit_pageseg_mode: '7' // treat as a single text line
         });
-        const res = await worker.recognize(pre[imageType]);
-        const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
+        const imgDataUrl = pre[imageType];
+        const res = await worker.recognize(imgDataUrl);
+        const text = res.data.text || '';
+        const raw = text.replace(/\s+/g, '').toUpperCase();
+        
+        rawOutputs.push({ raw: text.trim(), coeff, imageType, imgDataUrl });
+
         const corrected = extractAndCorrectPlate(raw);
-        if (corrected && corrected.confidence >= 85) {
-          // Fast check whole image succeeded
-          window._lastRawOCR = corrected.plate;
-          return {
+        if (corrected) {
+          const result = {
             plate: corrected.plate,
             type: corrected.isMercosul ? 'mercosul' : 'antiga',
             confidence: corrected.confidence,
-            raw: res.data.text.trim()
+            raw: text.trim(),
+            imgDataUrl: imgDataUrl
           };
+
+          // If high confidence match (0 or 1 corrections), return immediately
+          if (corrected.confidence >= 80) {
+            window._lastRawOCR = text.trim();
+            renderDebugImage(imgDataUrl);
+            return result;
+          }
+
+          // Save the best candidate found so far (e.g. 2 corrections)
+          if (!bestCandidate || corrected.confidence > bestCandidate.confidence) {
+            bestCandidate = result;
+          }
         }
-      } catch(e) {}
+      } catch(e) {
+        console.warn("Erro no OCR do coeff " + coeff + " (" + imageType + "):", e);
+      }
     }
   }
 
-  // Pass 2: Segmented character OCR (the most robust OCR pass)
-  // Run on multiple adaptive threshold levels
-  const segCoeffs = [0.86, 0.92];
-  for (const coeff of segCoeffs) {
-    const canvasNormal = getPreprocessedCanvas(source, isPhoto, coeff);
-    
-    // Try normal (black-on-white text) first
-    let result = await recognizeSegmented(canvasNormal);
-    if (result) {
-      return result;
-    }
-    
-    // Try inverted (white-on-black text binarized canvas inverted)
-    const canvasInverted = getInvertedCanvas(canvasNormal);
-    result = await recognizeSegmented(canvasInverted);
-    if (result) {
-      return result;
-    }
+  // Fallback: return the best candidate found with lower confidence (e.g. 2 corrections)
+  if (bestCandidate) {
+    window._lastRawOCR = bestCandidate.raw;
+    renderDebugImage(bestCandidate.imgDataUrl);
+    return bestCandidate;
+  }
+
+  // If no match was found, find the raw output with the most characters to show in the debug strip
+  if (rawOutputs.length > 0) {
+    rawOutputs.sort((a, b) => b.raw.length - a.raw.length);
+    window._lastRawOCR = rawOutputs[0].raw;
+    renderDebugImage(rawOutputs[0].imgDataUrl);
+  } else {
+    window._lastRawOCR = '';
   }
 
   return null;
