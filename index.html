@@ -492,7 +492,8 @@ const DIGIT_TO_CHAR = {
     $('fileWarningBanner').style.display = 'block';
   }
   
-  await initOCR();
+  // Inicializa o OCR em segundo plano para não travar a abertura da câmera
+  initOCR();
   
   setInterval(updateSession, 1000);
   setInterval(updateFPS, 800);
@@ -519,8 +520,7 @@ async function initOCR() {
 
     $('apiDot').className = 'status-dot ok';
     $('apiLabel').textContent = 'OCR LOCAL PRONTO';
-    $('loaderTxt').textContent = 'PRONTO';
-    await delay(600);
+    // Remove loader immediately if camera is already open
     $('loader').classList.add('gone');
   } catch (e) {
     console.error("Erro ao inicializar Tesseract:", e);
@@ -548,9 +548,14 @@ async function startCamera() {
     $('btnAuto').disabled = false;
     $('btnSnap').disabled = false;
     $('noCam').classList.remove('show');
+    
+    // Libera a tela de carregamento assim que a câmera estiver pronta
+    $('loader').classList.add('gone');
+    
     requestAnimationFrame(fpsLoop);
   } catch(e) {
     $('noCam').classList.add('show');
+    $('loader').classList.add('gone'); // remove loader para permitir upload de foto
   }
 }
 function stopCamera() {
@@ -984,7 +989,10 @@ async function recognizeSegmented(canvas) {
 }
 
 async function recognizePlateLocal(source, isPhoto) {
-  if (!worker) return null;
+  if (!worker) {
+    toastErr("O motor OCR está inicializando. Aguarde um instante...");
+    return null;
+  }
 
   // Pass 1: Try fast whole-image OCR with standard threshold (best for high resolution / clean angles)
   const coeffs = [0.86, 0.92];
