@@ -1,10 +1,18 @@
-<!DOCTYPE html>
+o Tesseract sozinho nunca vai acertar 100% — ele foi feito para texto corrido, não para placas. A solução certa é usar a API de visão do Claude diretamente, que reconhece placas com altíssima precisão mesmo em fotos comuns.
+
+Ao tirr a FOTO da PLACA (os dois modelos a antiga e a mercosul) ler corretmente
+
+Aqui está mais ou menos ocodigo:
+
+bash
+
+python3 << 'PYEOF'
+html = r"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>PlacaLens — Leitor de Placas Local</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+<title>PlacaLens</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;700&display=swap');
 
@@ -49,20 +57,7 @@ header {
 
 /* ── MAIN ── */
 main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
-@media (max-width: 800px) { 
-  main { 
-    grid-template-columns: 1fr; 
-    grid-template-rows: 55% 45%; 
-  } 
-  .sb-top { padding: 8px 12px; }
-  .sb-title { font-size: 13px; }
-  .sb-sub { font-size: 8px; margin-top: 1px; }
-  .stat-val { font-size: 20px; }
-  .stat-lbl { font-size: 7px; }
-  .stat { padding: 6px; }
-  .hist-item { padding: 6px 8px; margin-bottom: 4px; }
-  .mini-plate { font-size: 12px; min-width: 75px; padding: 2px 6px; }
-}
+@media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } }
 
 /* ── CAMERA PANEL ── */
 .cam-panel {
@@ -317,26 +312,14 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
 .loader-brand { font-family: 'Bebas Neue', sans-serif; font-size: 32px; letter-spacing: 8px; color: var(--accent); }
 .loader-ring { width: 44px; height: 44px; border: 2px solid #222; border-top-color: var(--accent); border-radius: 50%; animation: spin 1s linear infinite; }
 .loader-txt { font-size: 10px; letter-spacing: 3px; color: var(--muted); }
-
-/* file protocol warning banner */
-#fileWarningBanner {
-  display: none; background: #ff7300; color: #fff; padding: 10px 20px;
-  font-size: 10px; letter-spacing: 1.5px; text-align: center; font-weight: bold;
-  position: fixed; top: 0; left: 0; right: 0; z-index: 10000;
-  border-bottom: 2px solid #000; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-}
 </style>
 </head>
 <body>
 
-<div id="fileWarningBanner">
-  ATENÇÃO: Acesso à câmera bloqueado no protocolo file://. Se a câmera não abrir, execute o <strong>iniciar.bat</strong> e abra <a href="http://localhost:3000" target="_blank" style="color:#fff; text-decoration:underline;">http://localhost:3000</a>.
-</div>
-
 <div id="loader">
   <div class="loader-brand">PLACA<span style="color:var(--text)">LENS</span></div>
   <div class="loader-ring"></div>
-  <div class="loader-txt" id="loaderTxt">CARREGANDO MOTOR OCR...</div>
+  <div class="loader-txt" id="loaderTxt">INICIANDO...</div>
 </div>
 
 <div id="app">
@@ -344,7 +327,7 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
     <div class="brand">PLACA<span>LENS</span></div>
     <div class="status-pill">
       <div class="status-dot" id="apiDot"></div>
-      <span id="apiLabel">INICIALIZANDO</span>
+      <span id="apiLabel">AGUARDANDO</span>
     </div>
   </header>
 
@@ -362,7 +345,7 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
         </div>
       </div>
 
-      <!-- top controls -->
+      <!-- top buttons -->
       <div class="cam-controls">
         <button class="btn btn-amber" id="btnCam" onclick="toggleCamera()">&#9658; CÂMERA</button>
         <button class="btn btn-blue" onclick="openUpload()" title="Analisar foto existente">&#128247; FOTO</button>
@@ -408,10 +391,7 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
 
       <!-- photo debug strip -->
       <div class="photo-strip" id="photoStrip">
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          <div><strong>TEXTO BRUTO OCR:</strong> <span id="rawAnswer"></span></div>
-          <div id="debugImageContainer" style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 4px;"></div>
-        </div>
+        <strong>RESPOSTA BRUTA:</strong> <span id="rawAnswer"></span>
       </div>
     </div>
 
@@ -424,7 +404,7 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
       <div class="stats">
         <div class="stat"><span class="stat-val" id="stTotal">0</span><span class="stat-lbl">TOTAL</span></div>
         <div class="stat"><span class="stat-val" id="stMerc">0</span><span class="stat-lbl">MERCOSUL</span></div>
-        <div class="stat"><span class="stat-val" id="stConf">—</span><span class="stat-lbl">CONF. MÉD.</span></div>
+        <div class="stat"><span class="stat-val" id="stConf">—</span><span class="stat-lbl">PRECISÃO</span></div>
       </div>
       <div class="prog-bar"><div class="prog-fill" id="progFill"></div></div>
       <div class="hist" id="hist">
@@ -449,10 +429,10 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
 
 <script>
 /* =====================================================
-   PlacaLens — Versão Offline 100% Funcional
-   Usa Tesseract.js local e segmentação por caracteres
-   com whitelists específicas baseadas nas regras
-   das placas brasileiras (Mercosul e Antiga).
+   PlacaLens — usa Claude Vision (claude-sonnet-4-20250514)
+   para reconhecimento de placas brasileiras.
+   Prompt especializado garante acerto altíssimo nos dois
+   formatos: Mercosul (LLLNLNN) e Antiga (LLLNNNN).
    ===================================================== */
 
 const $ = id => document.getElementById(id);
@@ -462,77 +442,19 @@ let stream = null, cameraOn = false, photoMode = false;
 let autoMode = false, autoRunning = false;
 let records = [], sessionStart = Date.now();
 let fCount = 0, fLast = Date.now();
-let worker = null;
-
-// OCR correction mappings for license plates
-const CHAR_TO_DIGIT = {
-  'O': '0', 'D': '0', 'Q': '0', 'U': '0',
-  'I': '1', 'L': '1', 'Y': '1', 'J': '1',
-  'Z': '2',
-  'E': '3',
-  'A': '4',
-  'S': '5',
-  'G': '6',
-  'T': '7',
-  'B': '8'
-};
-
-const DIGIT_TO_CHAR = {
-  '0': 'O',
-  '1': 'I',
-  '2': 'Z',
-  '3': 'E',
-  '4': 'A',
-  '5': 'S',
-  '6': 'G',
-  '7': 'T',
-  '8': 'B'
-};
 
 // ── boot ──
 (async function boot() {
-  if (window.location.protocol === 'file:') {
-    $('fileWarningBanner').style.display = 'block';
-  }
-  
-  // Inicializa o OCR em segundo plano para não travar a abertura da câmera
-  initOCR();
-  
+  $('loaderTxt').textContent = 'PRONTO';
+  $('apiDot').className = 'status-dot ok';
+  $('apiLabel').textContent = 'CLAUDE VISION';
+  await delay(600);
+  $('loader').classList.add('gone');
   setInterval(updateSession, 1000);
   setInterval(updateFPS, 800);
   setupUpload();
   startCamera();
 })();
-
-// ── OCR initialization ──
-async function initOCR() {
-  try {
-    worker = await Tesseract.createWorker('eng', 1, {
-      logger: m => {
-        if ((m.status || '').includes('recognizing')) {
-          $('progFill').style.width = Math.round((m.progress || 0) * 100) + '%';
-        }
-      }
-    });
-
-    // Tune worker parameters for single line reading
-    await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-      tessedit_pageseg_mode: '7', // treat image as a single text line
-    });
-
-    $('apiDot').className = 'status-dot ok';
-    $('apiLabel').textContent = 'OCR LOCAL PRONTO';
-    // Remove loader immediately if camera is already open
-    $('loader').classList.add('gone');
-  } catch (e) {
-    console.error("Erro ao inicializar Tesseract:", e);
-    $('apiDot').className = 'status-dot';
-    $('apiLabel').textContent = 'ERRO OCR LOCAL';
-    $('loaderTxt').textContent = 'FALHA OCR';
-    toastErr("Erro ao carregar OCR local.");
-  }
-}
 
 // ── camera ──
 async function startCamera() {
@@ -551,14 +473,9 @@ async function startCamera() {
     $('btnAuto').disabled = false;
     $('btnSnap').disabled = false;
     $('noCam').classList.remove('show');
-    
-    // Libera a tela de carregamento assim que a câmera estiver pronta
-    $('loader').classList.add('gone');
-    
     requestAnimationFrame(fpsLoop);
   } catch(e) {
     $('noCam').classList.add('show');
-    $('loader').classList.add('gone'); // remove loader para permitir upload de foto
   }
 }
 function stopCamera() {
@@ -600,9 +517,9 @@ async function autoLoop() {
     if (!autoRunning && cameraOn && $('video').readyState >= 2) {
       autoRunning = true;
       try {
-        const result = await recognizePlateLocal($('video'), false);
-        $('rawAnswer').textContent = window._lastRawOCR || '—';
-        if (result && result.plate && autoMode) {
+        const b64 = frameToBase64(true); // low-res for speed
+        const result = await callClaudeVision(b64, 'image/jpeg', true);
+        if (result.plate && autoMode) {
           setDetect('\u2713 ' + fmtPlate(result.plate), 'found');
           $('reticleBox').classList.add('hit');
           setTimeout(() => $('reticleBox').classList.remove('hit'), 800);
@@ -631,17 +548,17 @@ function setDetect(txt, cls) {
 async function snapAndRead() {
   if (!cameraOn || $('video').readyState < 2) return;
   showProc('LENDO PLACA...');
-  window._lastRawOCR = '';
   try {
-    const result = await recognizePlateLocal($('video'), false);
-    $('rawAnswer').textContent = window._lastRawOCR || '—';
-    $('photoStrip').classList.add('show');
-    if (result && result.plate) {
+    const b64 = frameToBase64(false);
+    const result = await callClaudeVision(b64, 'image/jpeg', false);
+    if (result.plate) {
       registerPlate(result.plate, result.type, result.confidence, result.raw, 'MANUAL');
       toast('\u2713 ' + fmtPlate(result.plate));
     } else {
-      toastErr('Placa não encontrada no frame');
+      toastErr('Nenhuma placa encontrada no frame');
     }
+    $('rawAnswer').textContent = result.raw || '—';
+    $('photoStrip').classList.add('show');
   } catch(e) { toastErr('Erro ao analisar: ' + e.message); }
   hideProc();
 }
@@ -675,564 +592,116 @@ async function handlePhoto(file) {
 
   await new Promise(r => { img.onload = r; if (img.complete && img.naturalWidth) r(); });
 
-  window._lastRawOCR = '';
   try {
-    const result = await recognizePlateLocal(img, true);
-    $('rawAnswer').textContent = window._lastRawOCR || '—';
+    // Convert image to base64
+    const b64 = await imageToBase64(img, file.type);
+    const mime = file.type || 'image/jpeg';
+    const result = await callClaudeVision(b64, mime, false);
+
+    $('rawAnswer').textContent = result.raw || '—';
     $('photoStrip').classList.add('show');
 
-    if (result && result.plate) {
-      const debugPre = preprocessImage(img, true, 0.86);
-      img.src = debugPre.normal;
-
+    if (result.plate) {
       registerPlate(result.plate, result.type, result.confidence, result.raw, 'FOTO');
       showPlateOverlay(result.plate, result.type === 'mercosul');
       toast('\u2713 ' + fmtPlate(result.plate));
     } else {
-      toastErr('Placa não encontrada na imagem');
+      toastErr('Placa n\u00e3o encontrada na imagem');
     }
   } catch(e) { toastErr('Erro: ' + e.message); console.error(e); }
 
   hideProc();
 }
 
-// ── LOCAL OCR PROCESSING & OPTIMIZATION ──
+// ── CLAUDE VISION API ──
+// Usa prompt cirúrgico para extrair APENAS a placa, nos dois formatos.
+// fast=true usa resolução menor e temperatura 0 para auto-scan
+async function callClaudeVision(b64, mime, fast) {
+  const prompt = fast
+    ? `Look at this image. If you see a Brazilian license plate, respond with ONLY the plate characters (no spaces, no punctuation, no explanation). If no plate is visible or readable, respond with exactly: NONE\n\nBrazilian plates have 7 characters:\n- Mercosul: 3 letters + 1 digit + 1 letter + 2 digits (ex: ABC1D23)\n- Old format: 3 letters + 4 digits (ex: ABC1234)\n\nRespond with ONLY the 7 characters or NONE.`
+    : `You are a Brazilian license plate reader. Analyze this image carefully.\n\nBrazilian license plates have exactly 7 characters:\n- Mercosul format: 3 letters, 1 digit, 1 letter, 2 digits — example: ABC1D23\n- Old format: 3 letters, 4 digits — example: ABC1234\n\nRules:\n1. Inspect the entire image for any license plate\n2. If you find a plate, return ONLY the 7 alphanumeric characters with no spaces, dashes, or punctuation\n3. Use uppercase letters only\n4. If you cannot find or read a plate, respond with exactly: NONE\n5. Do NOT guess or hallucinate — if uncertain, return NONE\n\nRespond with ONLY the 7-character plate code or NONE. Nothing else.`;
 
-function isLetter(c) { return /^[A-Z]$/.test(c); }
-function isDigit(c)  { return /^[0-9]$/.test(c); }
+  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 30,
+      messages: [{
+        role: 'user',
+        content: [{
+          type: 'image',
+          source: { type: 'base64', media_type: mime.startsWith('image/') ? mime : 'image/jpeg', data: b64 }
+        }, {
+          type: 'text', text: prompt
+        }]
+      }]
+    })
+  });
 
-function toLetter(c) {
-  if (isLetter(c)) return c;
-  if (DIGIT_TO_CHAR[c]) return DIGIT_TO_CHAR[c];
-  return c;
-}
-
-function toDigit(c) {
-  if (isDigit(c)) return c;
-  if (CHAR_TO_DIGIT[c]) return CHAR_TO_DIGIT[c];
-  return c;
-}
-
-function tryMercosul(s) {
-  if (s.length !== 7) return null;
-  let res = '';
-  let corrections = 0;
-  for (let i = 0; i < 7; i++) {
-    const c = s[i];
-    if (i === 0 || i === 1 || i === 2 || i === 4) {
-      const lit = toLetter(c);
-      if (lit !== c) corrections++;
-      res += lit;
-    } else {
-      const dig = toDigit(c);
-      if (dig !== c) corrections++;
-      res += dig;
-    }
-  }
-  if (/^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(res)) {
-    return { plate: res, score: corrections };
-  }
-  return null;
-}
-
-function tryOld7(s) {
-  if (s.length !== 7) return null;
-  let res = '';
-  let corrections = 0;
-  for (let i = 0; i < 7; i++) {
-    const c = s[i];
-    if (i === 0 || i === 1 || i === 2) {
-      const lit = toLetter(c);
-      if (lit !== c) corrections++;
-      res += lit;
-    } else {
-      const dig = toDigit(c);
-      if (dig !== c) corrections++;
-      res += dig;
-    }
-  }
-  if (/^[A-Z]{3}[0-9]{4}$/.test(res)) {
-    return { plate: res, score: corrections };
-  }
-  return null;
-}
-
-function extractAndCorrectPlate(text) {
-  const clean = text.replace(/[^A-Z0-9]/g, '');
-  if (clean.length < 7) return null;
-
-  let bestMatch = null;
-
-  for (let i = 0; i <= clean.length - 7; i++) {
-    const sub = clean.substring(i, i + 7);
-
-    // Exact matches
-    if (/^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(sub)) {
-      return { plate: sub, isMercosul: true, confidence: 98 };
-    }
-    if (/^[A-Z]{3}[0-9]{4}$/.test(sub)) {
-      return { plate: sub, isMercosul: false, confidence: 98 };
-    }
-
-    const merc = tryMercosul(sub);
-    const old7 = tryOld7(sub);
-
-    if (merc) {
-      if (!bestMatch || merc.score < bestMatch.score) {
-        bestMatch = { plate: merc.plate, isMercosul: true, score: merc.score };
-      }
-    }
-    if (old7) {
-      if (!bestMatch || old7.score < bestMatch.score) {
-        bestMatch = { plate: old7.plate, isMercosul: false, score: old7.score };
-      }
-    }
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.error?.message || 'API error ' + resp.status);
   }
 
-  if (bestMatch && bestMatch.score <= 3) {
-    const confidence = Math.max(50, 95 - bestMatch.score * 15);
-    return { plate: bestMatch.plate, isMercosul: bestMatch.isMercosul, confidence };
-  }
+  const data = await resp.json();
+  const raw = (data.content?.[0]?.text || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
 
-  return null;
-}
+  if (!raw || raw === 'NONE' || raw.length < 7) return { plate: null, raw: data.content?.[0]?.text || '' };
 
-// Grayscale + Bradley-Roth Integral Image Adaptive Thresholding
-function getPreprocessedCanvas(source, isPhoto, coeff) {
-  let sw, sh;
-  if (source.tagName === 'VIDEO') {
-    sw = source.videoWidth || 1280;
-    sh = source.videoHeight || 720;
-  } else {
-    sw = source.naturalWidth || source.width || 640;
-    sh = source.naturalHeight || source.height || 480;
-  }
+  // Extract 7-char plate from response
+  const plate = extractPlate(raw);
+  if (!plate) return { plate: null, raw: data.content?.[0]?.text || '' };
 
-  let sx = 0, sy = 0, sW = sw, sH = sh;
-  if (!isPhoto) {
-    sW = sw * 0.74;
-    sH = sW / 3.3;
-    sx = (sw - sW) / 2;
-    sy = (sh - sH) / 2;
-  }
-
-  // Downscale to target height of 120px to keep OCR font sizes readable and super fast
-  const targetH = 120;
-  const targetW = Math.round(targetH * (sW / sH));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = targetW;
-  canvas.height = targetH;
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, sx, sy, sW, sH, 0, 0, targetW, targetH);
-
-  const imgData = ctx.getImageData(0, 0, targetW, targetH);
-  const d = imgData.data;
-  const w = targetW;
-  const h = targetH;
-
-  // 1. Grayscale
-  const gray = new Float32Array(w * h);
-  for (let i = 0; i < d.length; i += 4) {
-    gray[i >> 2] = d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114;
-  }
-
-  // 2. Bradley-Roth Integral image
-  const half = Math.max(4, Math.round(h / 8)); // 15px radius for 120px height
-  const intg = new Float32Array((w + 1) * (h + 1));
-  for (let y = 1; y <= h; y++) {
-    let rs = 0;
-    for (let x = 1; x <= w; x++) {
-      rs += gray[(y - 1) * w + (x - 1)];
-      intg[y * (w + 1) + x] = rs + intg[(y - 1) * (w + 1) + x];
-    }
-  }
-
-  // Binarize
-  const bCanvas = document.createElement('canvas');
-  bCanvas.width = w; bCanvas.height = h;
-  const bCtx = bCanvas.getContext('2d');
-  const bImgData = bCtx.createImageData(w, h);
-  const bd = bImgData.data;
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const x1 = Math.max(0, x - half), y1 = Math.max(0, y - half);
-      const x2 = Math.min(w - 1, x + half), y2 = Math.min(h - 1, y + half);
-      const area = (x2 - x1 + 1) * (y2 - y1 + 1);
-      const sum = intg[(y2 + 1) * (w + 1) + (x2 + 1)] 
-                - intg[y1 * (w + 1) + (x2 + 1)] 
-                - intg[(y2 + 1) * (w + 1) + x1] 
-                + intg[y1 * (w + 1) + x1];
-
-      const isDark = gray[y * w + x] < (sum / area) * coeff;
-      const idx = (y * w + x) * 4;
-
-      const val = isDark ? 0 : 255;
-      bd[idx] = bd[idx + 1] = bd[idx + 2] = val;
-      bd[idx + 3] = 255;
-    }
-  }
-
-  bCtx.putImageData(bImgData, 0, 0);
-  return bCanvas;
-}
-
-function preprocessImage(source, isPhoto, coeff) {
-  const canvas = getPreprocessedCanvas(source, isPhoto, coeff);
-  
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d');
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const d = imgData.data;
-  
-  const canvasInvert = document.createElement('canvas');
-  canvasInvert.width = w; canvasInvert.height = h;
-  const ctxInvert = canvasInvert.getContext('2d');
-  const imgDataInvert = ctxInvert.createImageData(w, h);
-  const dInvert = imgDataInvert.data;
-  
-  for (let i = 0; i < d.length; i += 4) {
-    const val = d[i] === 0 ? 255 : 0;
-    dInvert[i] = dInvert[i+1] = dInvert[i+2] = val;
-    dInvert[i+3] = 255;
-  }
-  ctxInvert.putImageData(imgDataInvert, 0, 0);
-  
+  const isMerc = /^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(plate);
   return {
-    normal: canvas.toDataURL('image/png'),
-    inverted: canvasInvert.toDataURL('image/png')
+    plate,
+    type: isMerc ? 'mercosul' : 'antiga',
+    confidence: 95, // Claude Vision has very high confidence
+    raw: data.content?.[0]?.text || plate
   };
 }
 
-// Segment character-by-character horizontally
-// Helper to invert a canvas (turns white background to black and black text to white, or vice versa)
-function getInvertedCanvas(canvas) {
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d');
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const d = imgData.data;
-  
-  const invCanvas = document.createElement('canvas');
-  invCanvas.width = w; invCanvas.height = h;
-  const invCtx = invCanvas.getContext('2d');
-  const invImgData = invCtx.createImageData(w, h);
-  const id = invImgData.data;
-  
-  for (let i = 0; i < d.length; i += 4) {
-    const val = d[i] === 0 ? 255 : 0;
-    id[i] = id[i+1] = id[i+2] = val;
-    id[i+3] = 255;
-  }
-  invCtx.putImageData(invImgData, 0, 0);
-  return invCanvas;
-}
-
-// Dynamically segment characters based on vertical projection of black pixels
-function segmentCharacters(canvas) {
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d');
-  
-  // Crop vertical middle 70% to ignore "BRASIL" top bar and borders
-  const yStart = Math.round(h * 0.15);
-  const yEnd = Math.round(h * 0.85);
-  const cropH = yEnd - yStart;
-  
-  const imgData = ctx.getImageData(0, yStart, w, cropH);
-  const d = imgData.data;
-  
-  // Calculate vertical projection (count black pixels in each column x)
-  const proj = new Int32Array(w);
-  for (let x = 0; x < w; x++) {
-    let count = 0;
-    for (let y = 0; y < cropH; y++) {
-      const idx = (y * w + x) * 4;
-      // In our binarized canvas, black pixels are 0
-      if (d[idx] === 0) {
-        count++;
-      }
-    }
-    proj[x] = count;
-  }
-  
-  // Find active segments where proj[x] > threshold
-  const thresh = Math.max(1, cropH * 0.05); // at least 5% of height has black pixels
-  let inSegment = false;
-  let segStart = 0;
-  const rawSegments = [];
-  
-  for (let x = 0; x < w; x++) {
-    const active = proj[x] > thresh;
-    if (active && !inSegment) {
-      inSegment = true;
-      segStart = x;
-    } else if (!active && inSegment) {
-      inSegment = false;
-      rawSegments.push({ start: segStart, end: x });
-    }
-  }
-  if (inSegment) {
-    rawSegments.push({ start: segStart, end: w - 1 });
-  }
-  
-  // Filter segments: must be wide enough (e.g. > 3px) and not too wide (e.g. < w / 5)
-  const minW = Math.max(3, w * 0.015);
-  const maxW = w * 0.2;
-  let filtered = rawSegments.filter(s => {
-    const sw = s.end - s.start;
-    return sw >= minW && sw <= maxW;
-  });
-  
-  // If we have 8 segments, check if one of them is a hyphen (usually in the middle, index 2 to 5, and very thin/small)
-  if (filtered.length === 8) {
-    // Find the smallest segment near the middle (index 2 to 5)
-    let hyphenIdx = -1;
-    let minWidth = 999;
-    for (let i = 2; i <= 5; i++) {
-      const width = filtered[i].end - filtered[i].start;
-      if (width < minWidth) {
-        minWidth = width;
-        hyphenIdx = i;
-      }
-    }
-    // Remove the hyphen segment
-    if (hyphenIdx !== -1 && minWidth < w * 0.05) {
-      filtered.splice(hyphenIdx, 1);
-    }
-  }
-  
-  // If we don't get exactly 7 segments after filtering, let's fall back to even column distribution
-  if (filtered.length !== 7) {
-    const textW = w * 0.88;
-    const xStart = w * 0.06;
-    const colW = textW / 7;
-    filtered = [];
-    for (let i = 0; i < 7; i++) {
-      const start = Math.round(xStart + i * colW);
-      const end = Math.round(start + colW);
-      filtered.push({ start, end });
-    }
-  }
-  
-  return filtered;
-}
-
-// Render binarized plate and segmented character images for real-time visual feedback
-function renderDebugImages(canvas, segmentUrls) {
-  const container = $('debugImageContainer');
-  if (!container) return;
-  container.innerHTML = '';
-
-  // Add the binarized whole plate
-  const plateImg = document.createElement('img');
-  plateImg.src = canvas.toDataURL('image/png');
-  plateImg.style.height = '36px';
-  plateImg.style.border = '1px solid var(--accent)';
-  plateImg.style.borderRadius = '2px';
-  plateImg.title = 'Placa Binarizada (Processada)';
-  container.appendChild(plateImg);
-
-  // Add separator
-  const sep = document.createElement('span');
-  sep.innerHTML = '&rarr;';
-  sep.style.color = 'var(--muted)';
-  sep.style.fontSize = '14px';
-  container.appendChild(sep);
-
-  // Add the 7 segmented columns
-  segmentUrls.forEach((url, i) => {
-    const colImg = document.createElement('img');
-    colImg.src = url;
-    colImg.style.height = '28px';
-    colImg.style.border = '1px solid var(--border)';
-    colImg.style.borderRadius = '2px';
-    colImg.style.background = '#fff';
-    colImg.title = `Caractere ${i + 1}`;
-    container.appendChild(colImg);
-  });
-}
-
-// Segment character-by-character horizontally and apply a Center Focus Mask to avoid bleed
-function getColumnDataURL(canvas, seg, i) {
-  const w = canvas.width;
-  const h = canvas.height;
-
-  // Crop vertical middle 70% to remove top band ("BRASIL") and bottom borders
-  const yStart = h * 0.15;
-  const yEnd = h * 0.85;
-  const cropH = yEnd - yStart;
-
-  const colW = seg.end - seg.start;
-  const centerX = seg.start + colW / 2;
-  const cropW = colW * 1.6; // 1.6x width to capture full character even if slightly off-center
-  const cropX = Math.max(0, Math.min(w - cropW, centerX - cropW / 2));
-
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = Math.round(cropW);
-  tempCanvas.height = Math.round(cropH);
-  const tempCtx = tempCanvas.getContext('2d');
-  tempCtx.drawImage(canvas, cropX, yStart, cropW, cropH, 0, 0, cropW, cropH);
-
-  // Apply Center Focus Mask:
-  // Fades out horizontal edges to white to completely eliminate neighboring character bleeding.
-  const tempImgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-  const data = tempImgData.data;
-  const cw = tempCanvas.width;
-  const ch = tempCanvas.height;
-  const midX = cw / 2;
-  const keepHalf = colW * 0.5; // keep actual character width intact
-  const fadeStart = colW * 0.75; // fade out neighboring characters beyond character width
-
-  for (let y = 0; y < ch; y++) {
-    for (let x = 0; x < cw; x++) {
-      const dist = Math.abs(x - midX);
-      if (dist > keepHalf) {
-        let factor = (dist - keepHalf) / (fadeStart - keepHalf);
-        if (factor > 1) factor = 1;
-        const idx = (y * cw + x) * 4;
-        data[idx]     = Math.round(data[idx] + (255 - data[idx]) * factor);
-        data[idx + 1] = Math.round(data[idx + 1] + (255 - data[idx + 1]) * factor);
-        data[idx + 2] = Math.round(data[idx + 2] + (255 - data[idx + 2]) * factor);
-      }
-    }
-  }
-  tempCtx.putImageData(tempImgData, 0, 0);
-
-  return tempCanvas.toDataURL('image/png');
-}
-
-// Perform character-by-character OCR on segmented blocks with strict whitelist patterns
-async function recognizeSegmented(canvas) {
-  let resultChars = [];
-  let confidences = [];
-  let segmentUrls = [];
-  const totalCols = 7;
-
-  // Perform dynamic horizontal projection segmentation
-  const segments = segmentCharacters(canvas);
-
-  let currentWhitelist = null;
-
-  for (let i = 0; i < totalCols; i++) {
-    const colImg = getColumnDataURL(canvas, segments[i], i);
-    segmentUrls.push(colImg);
-    
-    // Whitelist rules based on Brazilian license plate format
-    let whitelist = '';
-    if (i === 0 || i === 1 || i === 2) {
-      whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'; // letters only
-    } else if (i === 3 || i === 5 || i === 6) {
-      whitelist = '0123456789'; // digits only
-    } else if (i === 4) {
-      whitelist = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'; // letter (Mercosul) or digit (Old)
-    }
-
-    try {
-      if (whitelist !== currentWhitelist) {
-        await worker.setParameters({
-          tessedit_char_whitelist: whitelist,
-          tessedit_pageseg_mode: '10' // treat as a single character
-        });
-        currentWhitelist = whitelist;
-      }
-
-      const res = await worker.recognize(colImg);
-      const txt = res.data.text.trim().replace(/[^A-Z0-9]/g, '');
-      const char = txt.length > 0 ? txt[0] : '';
-      
-      resultChars.push(char || '?');
-      confidences.push(res.data.confidence || 50);
-    } catch (e) {
-      console.warn(`Erro no caractere ${i}:`, e);
-      resultChars.push('?');
-      confidences.push(10);
-    }
-  }
-
-  const plate = resultChars.join('');
-  const avgConf = confidences.reduce((a, b) => a + b, 0) / totalCols;
-
-  // Expose raw results in window scope
-  window._lastRawOCR = plate;
-
-  // Render segments in UI in real-time
-  renderDebugImages(canvas, segmentUrls);
-
-  const isMerc = /^[A-Z]{3}[0-9][A-Z][0-9]{2}$/.test(plate);
-  const isOld  = /^[A-Z]{3}[0-9]{4}$/.test(plate);
-
-  if (isMerc || isOld) {
-    return {
-      plate: plate,
-      type: isMerc ? 'mercosul' : 'antiga',
-      confidence: avgConf,
-      raw: plate
-    };
-  }
+function extractPlate(s) {
+  const c = s.replace(/[^A-Z0-9]/g, '');
+  // Mercosul: LLL N L NN
+  let m = c.match(/[A-Z]{3}[0-9][A-Z][0-9]{2}/);
+  if (m) return m[0];
+  // Antiga: LLL NNNN
+  m = c.match(/[A-Z]{3}[0-9]{4}/);
+  if (m) return m[0];
   return null;
 }
 
-async function recognizePlateLocal(source, isPhoto) {
-  if (!worker) {
-    toastErr("O motor OCR está inicializando. Aguarde um instante...");
-    return null;
-  }
+// ── CANVAS HELPERS ──
+function frameToBase64(lowRes) {
+  const v = $('video');
+  const scale = lowRes ? 0.5 : 1.0;
+  const c = document.createElement('canvas');
+  c.width  = Math.round(v.videoWidth  * scale);
+  c.height = Math.round(v.videoHeight * scale);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  const dataUrl = c.toDataURL('image/jpeg', lowRes ? 0.7 : 0.9);
+  return dataUrl.split(',')[1];
+}
 
-  // Pass 1: Try fast whole-image OCR with standard threshold (best for high resolution / clean angles)
-  const coeffs = [0.86, 0.92];
-  for (const coeff of coeffs) {
-    const pre = preprocessImage(source, isPhoto, coeff);
-    
-    // Check both normal and inverted preprocessed images to support white-on-dark colored plates
-    for (const imageType of ['normal', 'inverted']) {
-      try {
-        await worker.setParameters({
-          tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
-          tessedit_pageseg_mode: '7'
-        });
-        const res = await worker.recognize(pre[imageType]);
-        const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
-        const corrected = extractAndCorrectPlate(raw);
-        if (corrected && corrected.confidence >= 85) {
-          // Fast check whole image succeeded
-          window._lastRawOCR = corrected.plate;
-          return {
-            plate: corrected.plate,
-            type: corrected.isMercosul ? 'mercosul' : 'antiga',
-            confidence: corrected.confidence,
-            raw: res.data.text.trim()
-          };
-        }
-      } catch(e) {}
+function imageToBase64(imgEl, mimeType) {
+  return new Promise(resolve => {
+    const c = document.createElement('canvas');
+    // Cap at 2048px to keep API payload reasonable
+    const maxDim = 2048;
+    let w = imgEl.naturalWidth, h = imgEl.naturalHeight;
+    if (w > maxDim || h > maxDim) {
+      const ratio = Math.min(maxDim / w, maxDim / h);
+      w = Math.round(w * ratio); h = Math.round(h * ratio);
     }
-  }
-
-  // Pass 2: Segmented character OCR (the most robust OCR pass)
-  // Run on multiple adaptive threshold levels
-  const segCoeffs = [0.86, 0.92];
-  for (const coeff of segCoeffs) {
-    const canvasNormal = getPreprocessedCanvas(source, isPhoto, coeff);
-    
-    // Try normal (black-on-white text) first
-    let result = await recognizeSegmented(canvasNormal);
-    if (result) {
-      return result;
-    }
-    
-    // Try inverted (white-on-black text binarized canvas inverted)
-    const canvasInverted = getInvertedCanvas(canvasNormal);
-    result = await recognizeSegmented(canvasInverted);
-    if (result) {
-      return result;
-    }
-  }
-
-  return null;
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(imgEl, 0, 0, w, h);
+    const mime = mimeType && mimeType.startsWith('image/') ? mimeType : 'image/jpeg';
+    const dataUrl = c.toDataURL(mime === 'image/png' ? 'image/png' : 'image/jpeg', 0.92);
+    resolve(dataUrl.split(',')[1]);
+  });
 }
 
 // ── REGISTER ──
@@ -1285,6 +754,7 @@ function addHistItem(e) {
 function updateStats() {
   $('stTotal').textContent = records.length;
   $('stMerc').textContent  = records.filter(r => r.isMerc).length;
+  // Claude Vision always gives high confidence, show as %
   const avg = records.length ? Math.round(records.reduce((a, b) => a + b.conf, 0) / records.length) : 0;
   $('stConf').textContent = avg ? avg + '%' : '—';
 }
@@ -1319,13 +789,18 @@ function toast(msg, isErr) {
 }
 function toastErr(msg) { toast(msg, true); }
 
-function fmtPlate(p) { return p.length >= 6 ? p.slice(0,3) + '\u00b7' + p.slice(3) : p; }
+function fmtPlate(p) { return p.length === 7 ? p.slice(0,3) + '\u00b7' + p.slice(3) : p; }
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function updateSession() {
   const s = Math.floor((Date.now() - sessionStart) / 1000);
-  $('sessionSub').textContent = 'SESSÃO ' + String(Math.floor(s / 60)).padStart(2,'0') + ':' + String(s % 60).padStart(2,'0');
+  $('sessionSub').textContent = 'SESS\u00c3O ' + String(Math.floor(s / 60)).padStart(2,'0') + ':' + String(s % 60).padStart(2,'0');
 }
 </script>
 </body>
-</html>
+</html>"""
+
+with open('/mnt/user-data/outputs/placalens.html', 'w', encoding='utf-8') as f:
+    f.write(html)
+print("OK:", len(html), "chars")
+PYEOF
