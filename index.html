@@ -49,7 +49,20 @@ header {
 
 /* ── MAIN ── */
 main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
-@media (max-width: 800px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr auto; } }
+@media (max-width: 800px) { 
+  main { 
+    grid-template-columns: 1fr; 
+    grid-template-rows: 55% 45%; 
+  } 
+  .sb-top { padding: 8px 12px; }
+  .sb-title { font-size: 13px; }
+  .sb-sub { font-size: 8px; margin-top: 1px; }
+  .stat-val { font-size: 20px; }
+  .stat-lbl { font-size: 7px; }
+  .stat { padding: 6px; }
+  .hist-item { padding: 6px 8px; margin-bottom: 4px; }
+  .mini-plate { font-size: 12px; min-width: 75px; padding: 2px 6px; }
+}
 
 /* ── CAMERA PANEL ── */
 .cam-panel {
