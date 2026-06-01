@@ -908,6 +908,74 @@ function preprocessImage(source, isPhoto, coeff) {
   };
 }
 
+// Helper to invert a canvas (turns white background to black and black text to white, or vice versa)
+function getInvertedCanvas(canvas) {
+  const w = canvas.width;
+  const h = canvas.height;
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  
+  const invCanvas = document.createElement('canvas');
+  invCanvas.width = w; invCanvas.height = h;
+  const invCtx = invCanvas.getContext('2d');
+  const invImgData = invCtx.createImageData(w, h);
+  const id = invImgData.data;
+  
+  for (let i = 0; i < d.length; i += 4) {
+    const val = d[i] === 0 ? 255 : 0;
+    id[i] = id[i+1] = id[i+2] = val;
+    id[i+3] = 255;
+  }
+  invCtx.putImageData(invImgData, 0, 0);
+  return invCanvas;
+}
+
+// Analyze character pixel density in top-right quadrant to distinguish 0 (closed loop) from 6 (open hook)
+function isActuallyZero(canvas, bbox) {
+  const x0 = Math.max(0, Math.min(canvas.width - 1, bbox.x0));
+  const y0 = Math.max(0, Math.min(canvas.height - 1, bbox.y0));
+  const x1 = Math.max(0, Math.min(canvas.width - 1, bbox.x1));
+  const y1 = Math.max(0, Math.min(canvas.height - 1, bbox.y1));
+  const w = x1 - x0;
+  const h = y1 - y0;
+  
+  if (w <= 2 || h <= 2) return false;
+  
+  const ctx = canvas.getContext('2d');
+  const imgData = ctx.getImageData(x0, y0, w, h);
+  const d = imgData.data;
+  
+  // Analyze top-right quadrant of the character crop:
+  // x from 55% of width to 90% of width
+  // y from 15% of height to 45% of height
+  const xStart = Math.floor(w * 0.55);
+  const xEnd = Math.floor(w * 0.90);
+  const yStart = Math.floor(h * 0.15);
+  const yEnd = Math.floor(h * 0.45);
+  
+  let blackCount = 0;
+  let totalPixels = 0;
+  
+  for (let y = yStart; y <= yEnd; y++) {
+    for (let x = xStart; x <= xEnd; x++) {
+      if (x < 0 || x >= w || y < 0 || y >= h) continue;
+      const idx = (y * w + x) * 4;
+      if (d[idx] === 0) { // Black pixel in binarized canvas
+        blackCount++;
+      }
+      totalPixels++;
+    }
+  }
+  
+  if (totalPixels === 0) return false;
+  const ratio = blackCount / totalPixels;
+  
+  // A slashed zero '0' has a vertical right wall (high density of black pixels)
+  // A '6' has an open top-right (very low density of black pixels)
+  return ratio > 0.15;
+}
+
 // Render binarized plate image for real-time visual feedback of the OCR scanner
 function renderDebugImage(imgDataUrl) {
   const container = $('debugImageContainer');
@@ -935,22 +1003,36 @@ async function recognizePlateLocal(source, isPhoto) {
   let rawOutputs = [];
 
   for (const coeff of coeffs) {
-    const pre = preprocessImage(source, isPhoto, coeff);
+    const canvasNormal = getPreprocessedCanvas(source, isPhoto, coeff);
     
     // Check both normal (black text on white) and inverted (white text on black)
     for (const imageType of ['normal', 'inverted']) {
       try {
+        const activeCanvas = imageType === 'inverted' ? getInvertedCanvas(canvasNormal) : canvasNormal;
+        const imgDataUrl = activeCanvas.toDataURL('image/png');
+        
         await worker.setParameters({
           tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-',
           tessedit_pageseg_mode: '7' // treat as a single text line
         });
-        const imgDataUrl = pre[imageType];
         const res = await worker.recognize(imgDataUrl);
-        const text = res.data.text || '';
-        const raw = text.replace(/\s+/g, '').toUpperCase();
+        const symbols = res.data.symbols || [];
         const ocrConf = res.data.confidence || 50;
         
-        rawOutputs.push({ raw: text.trim(), ocrConf, imgDataUrl });
+        // Build corrected raw text by verifying if any '6' is actually a slashed zero '0'
+        let correctedRaw = '';
+        symbols.forEach((sym) => {
+          let char = sym.text;
+          if (char === '6') {
+            if (isActuallyZero(activeCanvas, sym.bbox)) {
+              char = '0';
+            }
+          }
+          correctedRaw += char;
+        });
+
+        const raw = correctedRaw.replace(/\s+/g, '').toUpperCase();
+        rawOutputs.push({ raw: correctedRaw.trim(), ocrConf, imgDataUrl });
 
         const corrected = extractAndCorrectPlate(raw);
         if (corrected) {
@@ -965,7 +1047,7 @@ async function recognizePlateLocal(source, isPhoto) {
             confidence: corrected.confidence,
             ocrConf: ocrConf,
             corrections: score,
-            raw: text.trim(),
+            raw: correctedRaw.trim(),
             imgDataUrl: imgDataUrl
           });
         }
