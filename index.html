@@ -436,7 +436,7 @@ main { display: grid; grid-template-columns: 1fr 340px; overflow: hidden; }
    PlacaLens — Versão Offline 100% Funcional
    Usa Tesseract.js local e processamento inteligente
    com regras de correção de padrões de placas brasileiras
-   (Mercosul e Antiga).
+   (Mercosul e Antigas de 6 ou 7 caracteres).
    ===================================================== */
 
 const $ = id => document.getElementById(id);
@@ -657,6 +657,10 @@ async function handlePhoto(file) {
     const result = await recognizePlateLocal(img, true);
 
     if (result && result.plate) {
+      // Display the binarized image to the user for feedback
+      const debugPre = preprocessImage(img, true, 0.86);
+      img.src = debugPre.normal;
+
       $('rawAnswer').textContent = result.raw || '—';
       $('photoStrip').classList.add('show');
       registerPlate(result.plate, result.type, result.confidence, result.raw, 'FOTO');
@@ -688,9 +692,9 @@ function toDigit(c) {
   return c;
 }
 
+// Format 1: Mercosul (LLLNLNN) E.g.: ABC1D23
 function tryMercosul(s) {
   if (s.length !== 7) return null;
-  // Format: LLL N L NN (Indices: 0,1,2=L; 3=N; 4=L; 5,6=N)
   let res = '';
   let corrections = 0;
   for (let i = 0; i < 7; i++) {
@@ -711,10 +715,9 @@ function tryMercosul(s) {
   return null;
 }
 
-// ── UPDATED FOR VERCEL DEPLOYMENT ──
-function tryOld(s) {
+// Format 2: Antiga 7 Chars (LLLNNNN) E.g.: ABC1234
+function tryOld7(s) {
   if (s.length !== 7) return null;
-  // Format: LLL NNNN (Indices: 0,1,2=L; 3,4,5,6=N)
   let res = '';
   let corrections = 0;
   for (let i = 0; i < 7; i++) {
@@ -735,12 +738,36 @@ function tryOld(s) {
   return null;
 }
 
+// Format 3: Antiga 6 Chars (LLLNNN) E.g.: ABC123 (typo fallback or older motorcycle standard)
+function tryOld6(s) {
+  if (s.length !== 6) return null;
+  let res = '';
+  let corrections = 0;
+  for (let i = 0; i < 6; i++) {
+    const c = s[i];
+    if (i === 0 || i === 1 || i === 2) {
+      const lit = toLetter(c);
+      if (lit !== c) corrections++;
+      res += lit;
+    } else {
+      const dig = toDigit(c);
+      if (dig !== c) corrections++;
+      res += dig;
+    }
+  }
+  if (/^[A-Z]{3}[0-9]{3}$/.test(res)) {
+    return { plate: res, score: corrections };
+  }
+  return null;
+}
+
 function extractAndCorrectPlate(text) {
   const clean = text.replace(/[^A-Z0-9]/g, '');
-  if (clean.length < 7) return null;
+  if (clean.length < 6) return null;
 
   let bestMatch = null;
 
+  // 1. Sliding window of 7 characters (for Mercosul LLLNLNN and Old LLLNNNN)
   for (let i = 0; i <= clean.length - 7; i++) {
     const sub = clean.substring(i, i + 7);
 
@@ -752,23 +779,42 @@ function extractAndCorrectPlate(text) {
       return { plate: sub, isMercosul: false, confidence: 98 };
     }
 
-    // Try autocorrecting
+    // Corrected matches
     const merc = tryMercosul(sub);
-    const old = tryOld(sub);
+    const old7 = tryOld7(sub);
 
     if (merc) {
       if (!bestMatch || merc.score < bestMatch.score) {
         bestMatch = { plate: merc.plate, isMercosul: true, score: merc.score };
       }
     }
-    if (old) {
-      if (!bestMatch || old.score < bestMatch.score) {
-        bestMatch = { plate: old.plate, isMercosul: false, score: old.score };
+    if (old7) {
+      if (!bestMatch || old7.score < bestMatch.score) {
+        bestMatch = { plate: old7.plate, isMercosul: false, score: old7.score };
       }
     }
   }
 
-  // Max 3 corrections allowed to avoid random text matching
+  // 2. Sliding window of 6 characters (for LLLNNN)
+  for (let i = 0; i <= clean.length - 6; i++) {
+    const sub = clean.substring(i, i + 6);
+
+    if (/^[A-Z]{3}[0-9]{3}$/.test(sub)) {
+      // Return exact 6-char immediately if we don't have a perfect 7-char match
+      if (!bestMatch || bestMatch.score > 0) {
+        return { plate: sub, isMercosul: false, confidence: 98 };
+      }
+    }
+
+    const old6 = tryOld6(sub);
+    if (old6) {
+      if (!bestMatch || old6.score < bestMatch.score) {
+        bestMatch = { plate: old6.plate, isMercosul: false, score: old6.score };
+      }
+    }
+  }
+
+  // Allow up to 3 character corrections
   if (bestMatch && bestMatch.score <= 3) {
     const confidence = Math.max(50, 95 - bestMatch.score * 15);
     return { plate: bestMatch.plate, isMercosul: bestMatch.isMercosul, confidence };
@@ -778,7 +824,8 @@ function extractAndCorrectPlate(text) {
 }
 
 // Grayscale + Bradley-Roth Integral Image Adaptive Thresholding
-function preprocessImage(source, isPhoto) {
+// Scaled down to optimal 120px height for Tesseract character recognition speed and size limits
+function preprocessImage(source, isPhoto, coeff) {
   let sw, sh;
   if (source.tagName === 'VIDEO') {
     sw = source.videoWidth || 1280;
@@ -796,20 +843,22 @@ function preprocessImage(source, isPhoto) {
     sy = (sh - sH) / 2;
   }
 
-  // Double size for better OCR
-  const scale = 2.5;
+  // Downscale to target height of 120px to keep OCR font sizes readable and super fast
+  const targetH = 120;
+  const targetW = Math.round(targetH * (sW / sH));
+
   const canvas = document.createElement('canvas');
-  canvas.width = Math.round(sW * scale);
-  canvas.height = Math.round(sH * scale);
+  canvas.width = targetW;
+  canvas.height = targetH;
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, sx, sy, sW, sH, 0, 0, canvas.width, canvas.height);
+  ctx.drawImage(source, sx, sy, sW, sH, 0, 0, targetW, targetH);
 
-  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const imgData = ctx.getImageData(0, 0, targetW, targetH);
   const d = imgData.data;
-  const w = canvas.width;
-  const h = canvas.height;
+  const w = targetW;
+  const h = targetH;
 
   // 1. Grayscale
   const gray = new Float32Array(w * h);
@@ -818,7 +867,7 @@ function preprocessImage(source, isPhoto) {
   }
 
   // 2. Bradley-Roth Integral image
-  const half = Math.max(8, Math.round(Math.min(w, h) / 8));
+  const half = Math.max(4, Math.round(h / 8)); // 15px radius for 120px height
   const intg = new Float32Array((w + 1) * (h + 1));
   for (let y = 1; y <= h; y++) {
     let rs = 0;
@@ -851,7 +900,7 @@ function preprocessImage(source, isPhoto) {
                 - intg[(y2 + 1) * (w + 1) + x1] 
                 + intg[y1 * (w + 1) + x1];
 
-      const isDark = gray[y * w + x] < (sum / area) * 0.86;
+      const isDark = gray[y * w + x] < (sum / area) * coeff;
       const idx = (y * w + x) * 4;
 
       // Normal
@@ -878,58 +927,19 @@ function preprocessImage(source, isPhoto) {
 async function recognizePlateLocal(source, isPhoto) {
   if (!worker) return null;
 
-  const pre = preprocessImage(source, isPhoto);
-  let bestResult = null;
+  // Multi-pass with different threshold coefficients for extreme lighting / font variations
+  const coeffs = [0.86, 0.92, 0.80];
 
-  // Pass 1: Normal thresholded binarization
-  try {
-    const res = await worker.recognize(pre.normal);
-    const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
-    const corrected = extractAndCorrectPlate(raw);
-    if (corrected) {
-      bestResult = {
-        plate: corrected.plate,
-        type: corrected.isMercosul ? 'mercosul' : 'antiga',
-        confidence: corrected.confidence,
-        raw: res.data.text.trim()
-      };
-    }
-  } catch (e) {
-    console.warn("Pass 1 Local error:", e);
-  }
+  for (const coeff of coeffs) {
+    const pre = preprocessImage(source, isPhoto, coeff);
 
-  // Pass 2: Inverted binarization
-  if (!bestResult || bestResult.confidence < 80) {
+    // Pass 1: Normal black-on-white text binarization
     try {
-      const res = await worker.recognize(pre.inverted);
-      const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
-      const corrected = extractAndCorrectPlate(raw);
-      if (corrected) {
-        if (!bestResult || corrected.confidence > bestResult.confidence) {
-          bestResult = {
-            plate: corrected.plate,
-            type: corrected.isMercosul ? 'mercosul' : 'antiga',
-            confidence: corrected.confidence,
-            raw: res.data.text.trim()
-          };
-        }
-      }
-    } catch (e) {
-      console.warn("Pass 2 Local error:", e);
-    }
-  }
-
-  // Pass 3: Spare Text Segmentation Mode
-  if (!bestResult) {
-    try {
-      await worker.setParameters({ tessedit_pageseg_mode: '11' });
       const res = await worker.recognize(pre.normal);
       const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
       const corrected = extractAndCorrectPlate(raw);
-      await worker.setParameters({ tessedit_pageseg_mode: '7' });
-
       if (corrected) {
-        bestResult = {
+        return {
           plate: corrected.plate,
           type: corrected.isMercosul ? 'mercosul' : 'antiga',
           confidence: corrected.confidence,
@@ -937,12 +947,50 @@ async function recognizePlateLocal(source, isPhoto) {
         };
       }
     } catch (e) {
-      console.warn("Pass 3 Local error:", e);
-      await worker.setParameters({ tessedit_pageseg_mode: '7' });
+      console.warn("Pass 1 error:", e);
+    }
+
+    // Pass 2: Inverted white-on-black text binarization (better for red/special/shadowed plates)
+    try {
+      const res = await worker.recognize(pre.inverted);
+      const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
+      const corrected = extractAndCorrectPlate(raw);
+      if (corrected) {
+        return {
+          plate: corrected.plate,
+          type: corrected.isMercosul ? 'mercosul' : 'antiga',
+          confidence: corrected.confidence,
+          raw: res.data.text.trim()
+        };
+      }
+    } catch (e) {
+      console.warn("Pass 2 error:", e);
     }
   }
 
-  return bestResult;
+  // Pass 3: Fallback using Sparse Text layout (tessedit_pageseg_mode = 11)
+  try {
+    const pre = preprocessImage(source, isPhoto, 0.86);
+    await worker.setParameters({ tessedit_pageseg_mode: '11' });
+    const res = await worker.recognize(pre.normal);
+    const raw = res.data.text.replace(/\s+/g, '').toUpperCase();
+    const corrected = extractAndCorrectPlate(raw);
+    await worker.setParameters({ tessedit_pageseg_mode: '7' });
+
+    if (corrected) {
+      return {
+        plate: corrected.plate,
+        type: corrected.isMercosul ? 'mercosul' : 'antiga',
+        confidence: corrected.confidence,
+        raw: res.data.text.trim()
+      };
+    }
+  } catch (e) {
+    console.warn("Pass 3 error:", e);
+    await worker.setParameters({ tessedit_pageseg_mode: '7' });
+  }
+
+  return null;
 }
 
 // ── REGISTER ──
@@ -971,7 +1019,6 @@ function showPlateOverlay(plate, isMerc) {
 }
 
 // ── UI ──
-// ... unchanged ...
 function addHistItem(e) {
   $('emptyState').style.display = 'none';
   const conf = Math.round(e.conf);
@@ -1030,7 +1077,7 @@ function toast(msg, isErr) {
 }
 function toastErr(msg) { toast(msg, true); }
 
-function fmtPlate(p) { return p.length === 7 ? p.slice(0,3) + '\u00b7' + p.slice(3) : p; }
+function fmtPlate(p) { return p.length >= 6 ? p.slice(0,3) + '\u00b7' + p.slice(3) : p; }
 function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function updateSession() {
